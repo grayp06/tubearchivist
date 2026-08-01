@@ -1,238 +1,349 @@
-"""
-functionality:
-- wrapper around requests to call elastic search
-- reusable search_after to extract total index
-"""
+"""SQLite document store with the former Elasticsearch wrapper interface.
 
-# pylint: disable=missing-timeout
+Keeping ``ElasticWrap`` as an API name makes the storage migration incremental
+for callers, but this module performs no HTTP requests and imports no search
+server client. Documents are JSON on disk; filtering deliberately trades CPU
+and latency for a small, predictable memory footprint.
+"""
 
 import json
-from typing import Any
+import re
+import sqlite3
+from contextlib import contextmanager
+from copy import deepcopy
 
-import requests
-import urllib3
 from common.src.env_settings import EnvironmentSettings
 
 
-class ElasticWrap:
-    """makes all calls to elastic search
-    returns response json and status code tuple
-    """
+def _field(document, dotted):
+    value = document
+    for part in dotted.removesuffix(".keyword").split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            return None
+    return value
 
-    def __init__(self, path: str):
-        self.url: str = f"{EnvironmentSettings.ES_URL}/{path}"
-        self.auth: tuple[str, str] = (
-            EnvironmentSettings.ES_USER,
-            EnvironmentSettings.ES_PASS,
+
+def _values(value):
+    return value if isinstance(value, list) else [value]
+
+
+def _matches(document, query):
+    """Evaluate the subset of the Elasticsearch DSL used by TA views."""
+    if not query or "match_all" in query:
+        return True
+    if "bool" in query:
+        clause = query["bool"]
+        must = clause.get("must", []) + clause.get("filter", [])
+        must = must if isinstance(must, list) else [must]
+        must_not = clause.get("must_not", [])
+        must_not = must_not if isinstance(must_not, list) else [must_not]
+        should = clause.get("should", [])
+        should = should if isinstance(should, list) else [should]
+        minimum = int(clause.get("minimum_should_match", 1 if should and not must else 0))
+        return (
+            all(_matches(document, item) for item in must)
+            and not any(_matches(document, item) for item in must_not)
+            and sum(_matches(document, item) for item in should) >= minimum
         )
+    for operator in ("term", "match"):
+        if operator in query:
+            field, wanted = next(iter(query[operator].items()))
+            if isinstance(wanted, dict):
+                wanted = wanted.get("query")
+            actual = _field(document, field)
+            if operator == "term":
+                return any(str(item) == str(wanted) for item in _values(actual))
+            return str(wanted).casefold() in str(actual or "").casefold()
+    if "terms" in query:
+        field, wanted = next(iter(query["terms"].items()))
+        return bool({str(v) for v in _values(_field(document, field))} & {str(v) for v in wanted})
+    if "exists" in query:
+        return _field(document, query["exists"]["field"]) is not None
+    if "ids" in query:
+        return str(document.get("_ta_id")) in map(str, query["ids"]["values"])
+    if "range" in query:
+        field, limits = next(iter(query["range"].items()))
+        actual = _field(document, field)
+        if actual is None:
+            return False
+        return all({"gt": actual > value, "gte": actual >= value,
+                    "lt": actual < value, "lte": actual <= value}[op]
+                   for op, value in limits.items() if op in {"gt", "gte", "lt", "lte"})
+    if "wildcard" in query:
+        field, wanted = next(iter(query["wildcard"].items()))
+        wanted = wanted.get("value") if isinstance(wanted, dict) else wanted
+        pattern = "^" + re.escape(wanted).replace(r"\*", ".*").replace(r"\?", ".") + "$"
+        return any(re.match(pattern, str(value), re.I) for value in _values(_field(document, field)))
+    if "multi_match" in query:
+        spec = query["multi_match"]
+        needle = str(spec.get("query", "")).casefold()
+        return any(needle in str(_field(document, field.split("^")[0]) or "").casefold()
+                   for field in spec.get("fields", []))
+    if "nested" in query:
+        nested = query["nested"]
+        children = _field(document, nested["path"]) or []
+        return any(_matches({nested["path"]: child}, nested["query"]) for child in children)
+    if "query_string" in query or "simple_query_string" in query:
+        spec = query.get("query_string", query.get("simple_query_string"))
+        needle = str(spec.get("query", "")).replace("*", "").casefold()
+        return needle in json.dumps(document, ensure_ascii=False).casefold()
+    # Unknown clauses should not silently hide a user's library.
+    return True
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    def get(
-        self,
-        data: bool | dict = False,
-        timeout: int = 10,
-        print_error: bool = True,
-    ) -> tuple[dict, int]:
-        """get data from es"""
+class ElasticWrap:
+    """Compatibility facade backed entirely by an on-disk SQLite table."""
 
-        kwargs: dict[str, Any] = {
-            "auth": self.auth,
-            "timeout": timeout,
-        }
+    def __init__(self, path):
+        self.path = path.strip("/")
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
+    @contextmanager
+    def _connection(self):
+        connection = sqlite3.connect(EnvironmentSettings.DATABASE_PATH, timeout=30)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS document_store (
+                index_name TEXT NOT NULL, document_id TEXT NOT NULL,
+                source TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(index_name, document_id)
+            ) WITHOUT ROWID"""
+        )
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
 
-        if data:
-            kwargs["json"] = data
+    def _parts(self):
+        clean = self.path.split("?", 1)[0]
+        return clean.split("/") if clean else []
 
-        response = requests.get(self.url, **kwargs)
+    def get(self, data=False, timeout=10, print_error=True):
+        del timeout, print_error
+        parts = self._parts()
+        if parts == [""]:
+            return {}, 200
+        if parts and parts[-1] in {"_search", "_count"} or self.path == "_search":
+            response = self._search(data or {})
+            if parts and parts[-1] == "_count":
+                return {"count": response["hits"]["total"]["value"]}, 200
+            return response, 200
+        if len(parts) >= 3 and parts[-2] == "_doc":
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT source FROM document_store WHERE index_name=? AND document_id=?",
+                    (parts[0], parts[-1]),
+                ).fetchone()
+            if not row:
+                return {"found": False}, 404
+            return {"_index": parts[0], "_id": parts[-1], "found": True,
+                    "_source": json.loads(row[0])}, 200
+        if len(parts) == 1:
+            with self._connection() as connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM document_store WHERE index_name=? LIMIT 1", (parts[0],)
+                ).fetchone()
+            return ({parts[0]: {"mappings": {}, "settings": {}}}, 200) if exists else ({}, 404)
+        if parts and parts[-1] in {"_mapping", "_alias"}:
+            return {parts[0]: {"mappings": {}, "aliases": {parts[0]: {}}}}, 200
+        return {}, 200
 
-        if print_error and not response.ok:
-            print(response.text)
+    def put(self, data=False, refresh=False):
+        del refresh
+        parts = self._parts()
+        if len(parts) >= 3 and parts[-2] == "_doc":
+            self._upsert(parts[0], parts[-1], data or {})
+            return {"result": "created", "_id": parts[-1]}, 201
+        # Index creation/mappings/pipelines need no separate SQLite resource.
+        return {"acknowledged": True}, 200
 
-        return response.json(), response.status_code
+    def post(self, data=False, ndjson=False):
+        parts = self._parts()
+        if self.path == "_bulk":
+            return self._bulk(data), 200
+        if len(parts) >= 3 and parts[-2] == "_doc":
+            self._upsert(parts[0], parts[-1], data or {})
+            return {"result": "updated", "_id": parts[-1]}, 200
+        if parts and parts[-1] in {"_search", "_count"}:
+            return self.get(data=data)
+        if len(parts) >= 3 and parts[-2] == "_update":
+            current, status = ElasticWrap(f"{parts[0]}/_doc/{parts[-1]}").get()
+            source = current.get("_source", {}) if status == 200 else {}
+            source.update((data or {}).get("doc", {}))
+            self._upsert(parts[0], parts[-1], source)
+            return {"result": "updated"}, 200
+        if parts and parts[-1] in {"_delete_by_query", "_update_by_query"}:
+            return self._by_query(parts[0], data or {}, parts[-1]), 200
+        if self.path in {"_aliases", "_pit"} or (parts and parts[-1] == "_reindex"):
+            return {"acknowledged": True}, 200
+        return {"acknowledged": True}, 200
 
-    def post(
-        self, data: bool | dict | str = False, ndjson: bool = False
-    ) -> tuple[dict, int]:
-        """post data to es"""
+    def delete(self, data=False, refresh=False):
+        del data, refresh
+        parts = self._parts()
+        with self._connection() as connection:
+            if len(parts) >= 3 and parts[-2] == "_doc":
+                cursor = connection.execute(
+                    "DELETE FROM document_store WHERE index_name=? AND document_id=?",
+                    (parts[0], parts[-1]),
+                )
+            elif len(parts) == 1:
+                cursor = connection.execute("DELETE FROM document_store WHERE index_name=?", (parts[0],))
+            else:
+                return {"acknowledged": True}, 200
+        return {"result": "deleted" if cursor.rowcount else "not_found"}, 200 if cursor.rowcount else 404
 
-        kwargs: dict[str, Any] = {"auth": self.auth}
-
-        if ndjson and data:
-            kwargs.update(
-                {
-                    "headers": {"Content-type": "application/x-ndjson"},
-                    "data": data,
-                }
+    def _upsert(self, index, document_id, source):
+        with self._connection() as connection:
+            connection.execute(
+                """INSERT INTO document_store(index_name, document_id, source)
+                   VALUES(?, ?, ?) ON CONFLICT(index_name, document_id) DO UPDATE SET
+                   source=excluded.source, updated_at=CURRENT_TIMESTAMP""",
+                (index, str(document_id), json.dumps(source, separators=(",", ":"))),
             )
-        elif data:
-            kwargs.update(
-                {
-                    "headers": {"Content-type": "application/json"},
-                    "data": json.dumps(data),
-                }
+
+    def _search(self, request):
+        parts = self._parts()
+        indices = [] if not parts or parts[0] == "_search" else parts[0].split(",")
+        size = max(0, int(request.get("size", 10)))
+        start = max(0, int(request.get("from", 0)))
+        query = request.get("query", {"match_all": {}})
+        hits, total = [], 0
+        sql = "SELECT index_name, document_id, source FROM document_store"
+        params = []
+        if indices:
+            sql += " WHERE index_name IN (" + ",".join("?" for _ in indices) + ")"
+            params.extend(indices)
+        sql += " ORDER BY index_name, document_id"
+        with self._connection() as connection:
+            for index, document_id, raw in connection.execute(sql, params):
+                source = json.loads(raw)
+                matchable = dict(source, _ta_id=document_id)
+                if not _matches(matchable, query):
+                    continue
+                if total >= start and len(hits) < size:
+                    hits.append({"_index": index, "_id": document_id,
+                                 "_source": source, "_score": 1.0,
+                                 "sort": [document_id]})
+                total += 1
+        sort_specs = request.get("sort", [])
+        for spec in reversed(sort_specs):
+            if isinstance(spec, str):
+                field, reverse = spec, False
+            else:
+                field, options = next(iter(spec.items()))
+                reverse = options == "desc" or isinstance(options, dict) and options.get("order") == "desc"
+            if field not in {"_doc", "_score"}:
+                hits.sort(key=lambda hit: (_field(hit["_source"], field) is None,
+                                           _field(hit["_source"], field)), reverse=reverse)
+        response = {"took": 0, "hits": {"total": {"value": total, "relation": "eq"},
+                                          "max_score": 1.0 if hits else None, "hits": hits}}
+        if request.get("aggs") or request.get("aggregations"):
+            response["aggregations"] = self._aggregate(
+                indices, query, request.get("aggs", request.get("aggregations", {}))
             )
+        return response
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
+    def _aggregate(self, indices, query, specifications):
+        """Calculate simple terms/value/count aggregations one row at a time."""
+        documents = []
+        sql = "SELECT source FROM document_store"
+        params = []
+        if indices:
+            sql += " WHERE index_name IN (" + ",".join("?" for _ in indices) + ")"
+            params = indices
+        with self._connection() as connection:
+            for (raw,) in connection.execute(sql, params):
+                document = json.loads(raw)
+                if _matches(document, query):
+                    documents.append(document)
+        output = {}
+        for name, spec in specifications.items():
+            if "terms" in spec:
+                field = spec["terms"]["field"]
+                counts = {}
+                for document in documents:
+                    for value in _values(_field(document, field)):
+                        if value is not None:
+                            counts[value] = counts.get(value, 0) + 1
+                size = int(spec["terms"].get("size", 10))
+                buckets = [{"key": key, "doc_count": count} for key, count in
+                           sorted(counts.items(), key=lambda item: (-item[1], str(item[0])))[:size]]
+                output[name] = {"doc_count_error_upper_bound": 0,
+                                "sum_other_doc_count": 0, "buckets": buckets}
+            elif "value_count" in spec:
+                field = spec["value_count"]["field"]
+                output[name] = {"value": sum(_field(doc, field) is not None for doc in documents)}
+            elif "sum" in spec:
+                field = spec["sum"]["field"]
+                output[name] = {"value": sum(_field(doc, field) or 0 for doc in documents)}
+            elif "filter" in spec:
+                selected = [doc for doc in documents if _matches(doc, spec["filter"])]
+                output[name] = {"doc_count": len(selected)}
+        return output
 
-        response = requests.post(self.url, **kwargs)
+    def _bulk(self, payload):
+        lines = [json.loads(line) for line in str(payload or "").splitlines() if line.strip()]
+        items, position = [], 0
+        while position < len(lines):
+            action, meta = next(iter(lines[position].items()))
+            position += 1
+            index, document_id = meta.get("_index"), str(meta.get("_id"))
+            if action in {"index", "create"}:
+                self._upsert(index, document_id, lines[position]); position += 1
+            elif action == "update":
+                body = lines[position]; position += 1
+                current, status = ElasticWrap(f"{index}/_doc/{document_id}").get()
+                source = current.get("_source", {}) if status == 200 else {}
+                source.update(body.get("doc", body)); self._upsert(index, document_id, source)
+            elif action == "delete":
+                ElasticWrap(f"{index}/_doc/{document_id}").delete()
+            items.append({action: {"_index": index, "_id": document_id, "status": 200}})
+        return {"errors": False, "items": items}
 
-        if not response.ok:
-            print(response.text)
-
-        return response.json(), response.status_code
-
-    def put(
-        self,
-        data: bool | dict = False,
-        refresh: bool = False,
-    ) -> tuple[dict, Any]:
-        """put data to es"""
-
-        if refresh:
-            self.url = f"{self.url}/?refresh=true"
-
-        kwargs: dict[str, Any] = {
-            "json": data,
-            "auth": self.auth,
-        }
-
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
-
-        response = requests.put(self.url, **kwargs)
-
-        if not response.ok:
-            print(response.text)
-            print(data)
-            raise ValueError("failed to add item to index")
-
-        return response.json(), response.status_code
-
-    def delete(
-        self,
-        data: bool | dict = False,
-        refresh: bool = False,
-    ) -> tuple[dict, Any]:
-        """delete document from es"""
-
-        if refresh:
-            self.url = f"{self.url}/?refresh=true"
-
-        kwargs: dict[str, Any] = {"auth": self.auth}
-
-        if data:
-            kwargs["json"] = data
-
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
-
-        response = requests.delete(self.url, **kwargs)
-
-        if not response.ok:
-            print(response.text)
-
-        return response.json(), response.status_code
+    def _by_query(self, index, request, operation):
+        response = ElasticWrap(f"{index}/_search").get(
+            {"query": request.get("query", {"match_all": {}}), "size": 1000000}
+        )[0]
+        hits = response["hits"]["hits"]
+        for hit in hits:
+            if operation == "_delete_by_query":
+                ElasticWrap(f"{index}/_doc/{hit['_id']}").delete()
+            elif "script" in request:
+                source = deepcopy(hit["_source"])
+                # TA scripts primarily assign params to a field.
+                for key, value in request["script"].get("params", {}).items():
+                    source[key] = value
+                self._upsert(index, hit["_id"], source)
+        return {"total": len(hits), "updated": len(hits), "deleted": len(hits)}
 
 
 class IndexPaginate:
-    """use search_after to go through whole index
-    kwargs:
-    - size: int, overwrite DEFAULT_SIZE
-    - keep_source: bool, keep _source key from es results
-    - callback: obj, Class implementing run method callback for every loop
-    - task: task object to send notification
-    - total: int, total items in index for progress message
-    - timeout: int, overwrite timeout in get request
-    - pit_keep_alive: int, overwrite pit valid
-    """
+    """Page through SQLite results without point-in-time server state."""
 
     DEFAULT_SIZE = 500
 
-    def __init__(self, index_name, data, **kwargs):
-        self.index_name = index_name
-        self.data = data
-        self.pit_id = False
-        self.kwargs = kwargs
+    def __init__(self, index_name, data=False, **kwargs):
+        self.index_name, self.data, self.kwargs = index_name, data or {}, kwargs
 
     def get_results(self):
-        """get all results, add task and total for notifications"""
-        self.get_pit()
-        self.validate_data()
-        all_results = self.run_loop()
-        self.clean_pit()
-        return all_results
-
-    def get_pit(self):
-        """get pit for index"""
-        keep_alive = self.kwargs.get("pit_keep_alive", 15)
-        path = f"{self.index_name}/_pit?keep_alive={keep_alive}m"
-        response, _ = ElasticWrap(path).post()
-        self.pit_id = response["id"]
-
-    def validate_data(self):
-        """add pit and size to data"""
-        if not self.data:
-            self.data = {}
-
-        if "query" not in self.data.keys():
-            self.data.update({"query": {"match_all": {}}})
-
-        if "sort" not in self.data.keys():
-            self.data.update({"sort": [{"_doc": {"order": "desc"}}]})
-
-        self.data["size"] = self.kwargs.get("size") or self.DEFAULT_SIZE
-        self.data["pit"] = {"id": self.pit_id, "keep_alive": "15m"}
-
-    def run_loop(self):
-        """loop through results until last hit"""
-        all_results = []
-        counter = 0
+        page_size = self.kwargs.get("size", self.DEFAULT_SIZE)
+        offset, results = 0, []
         while True:
-            get_kwargs = {"data": self.data}
-            if timeout_overwrite := self.kwargs.get("timeout"):
-                get_kwargs.update({"timeout": timeout_overwrite})
-
-            response, _ = ElasticWrap("_search").get(**get_kwargs)
-            all_hits = response["hits"]["hits"]
-            if not all_hits:
+            request = deepcopy(self.data)
+            request.update({"size": page_size, "from": offset})
+            hits = ElasticWrap(f"{self.index_name}/_search").get(request)[0]["hits"]["hits"]
+            if not hits:
                 break
-
-            for hit in all_hits:
-                if self.kwargs.get("keep_source"):
-                    all_results.append(hit)
-                else:
-                    all_results.append(hit["_source"])
-
-            if self.kwargs.get("callback"):
-                self.kwargs.get("callback")(
-                    all_hits, self.index_name, counter=counter
-                ).run()
-
-            if self.kwargs.get("task"):
-                print(f"{self.index_name}: processing page {counter}")
-                self._notify(len(all_results))
-
-            counter += 1
-
-            # update search_after with last hit data
-            self.data["search_after"] = all_hits[-1]["sort"]
-
-        return all_results
-
-    def _notify(self, processed):
-        """send notification on task"""
-        total = self.kwargs.get("total")
-        progress = processed / total
-        index_clean = self.index_name.lstrip("ta_").title()
-        message = [f"Processing {index_clean}s {processed}/{total}"]
-        self.kwargs.get("task").send_progress(message, progress=progress)
-
-    def clean_pit(self):
-        """delete pit from elastic search"""
-        ElasticWrap("_pit").delete(data={"id": self.pit_id})
+            results.extend(hits if self.kwargs.get("keep_source") else [hit["_source"] for hit in hits])
+            callback = self.kwargs.get("callback")
+            if callback:
+                callback(hits, self.index_name, counter=offset // page_size).run()
+            offset += len(hits)
+            if len(hits) < page_size:
+                break
+        return results

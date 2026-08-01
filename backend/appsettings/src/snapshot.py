@@ -19,7 +19,7 @@ class ElasticSnapshot:
     REPO_SETTINGS = {
         "compress": "true",
         "chunk_size": "1g",
-        "location": EnvironmentSettings.ES_SNAPSHOT_DIR,
+        "location": EnvironmentSettings.SNAPSHOT_DIR,
     }
     POLICY = "ta_daily"
 

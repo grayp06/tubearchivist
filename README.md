@@ -43,7 +43,10 @@ Once your YouTube video collection grows, it becomes hard to search and find a s
 
 ## Installing
 
-For minimal system requirements, the Tube Archivist stack needs around 2GB of available memory for a small testing setup and around 4GB of available memory for a mid to large sized installation. Minimal with dual core with 4 threads, better quad core plus.
+This fork uses one SQLite database on the cache volume for application data,
+document metadata, queues, and task results. It does not require Elasticsearch
+or Redis. The default single worker deliberately prioritizes low memory usage
+over indexing and download throughput.
 This project requires docker. Ensure it is installed and running on your system.
 
 The documentation has additional user provided instructions for [Unraid](https://docs.tubearchivist.com/installation/unraid/), [Synology](https://docs.tubearchivist.com/installation/synology/) and [Podman](https://docs.tubearchivist.com/installation/podman/).
@@ -54,7 +57,7 @@ Take a look at the example [docker-compose.yml](https://github.com/tubearchivist
 
 All environment variables are explained in detail in the docs [here](https://docs.tubearchivist.com/installation/env-vars/).
 
-Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow passing in passwords as secrets. `_FILE` is a convention used by some images including [ElasticSearch](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/install-elasticsearch-docker-configure)
+`TA_PASSWORD` can be suffixed with `_FILE` to load the password from a Docker secret.
 
 ### TubeArchivist
 
@@ -63,20 +66,15 @@ Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow 
 | TA_HOST                       | Server IP or hostname `http://tubearchivist.local:8000` | Required |
 | TA_USERNAME                   | Initial username when logging into TA | Required |
 | TA_PASSWORD                   | Initial password when logging into TA | Required |
-| ELASTIC_PASSWORD              | Password for ElasticSearch | Required |
-| REDIS_CON                     | Connection string to Redis | Required |
 | TZ                            | Set your timezone for the scheduler | Required |
 | TA_PORT                       | Overwrite Nginx port | Optional |
 | TA_BACKEND_PORT               | Overwrite container internal backend server port | Optional |
 | TA_ENABLE_AUTH_PROXY          | Enables support for forwarding auth in reverse proxies | [Read more](https://docs.tubearchivist.com/configuration/forward-auth/) |
 | TA_AUTH_PROXY_USERNAME_HEADER | Header containing username to log in | Optional |
 | TA_AUTH_PROXY_LOGOUT_URL      | Logout URL for forwarded auth | Optional |
-| ES_URL                        | URL That ElasticSearch runs on | Optional |
-| ES_DISABLE_VERIFY_SSL         | Disable ElasticSearch SSL certificate verification | Optional |
-| ES_SNAPSHOT_DIR               | Custom path where elastic search stores snapshots for master/data nodes | Optional |
+| TA_DATABASE_PATH              | SQLite database path (default `/cache/db.sqlite3`) | Optional |
 | HOST_GID                      | Allow TA to own the video files instead of container user | Optional |
 | HOST_UID                      | Allow TA to own the video files instead of container user | Optional |
-| ELASTIC_USER                  | Change the default ElasticSearch user | Optional |
 | TA_LDAP                       | Configure TA to use LDAP Authentication | [Read more](https://docs.tubearchivist.com/configuration/ldap/) |
 | DISABLE_STATIC_AUTH           | Remove authentication from media files, (Google Cast...) | [Read more](https://docs.tubearchivist.com/installation/env-vars/#disable_static_auth) |
 | TA_AUTO_UPDATE_YTDLP          | Configure TA to automatically install the latest yt-dlp on container start | Optional |
@@ -91,13 +89,6 @@ Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow 
 | forwardauth              | Use reverse proxy headers only |
 | ldap_local               | Use LDAP backend in addition to the local password database |
 
-### ElasticSearch
-
-| Environment Var  | Value | Required |
-| ---------------- | ----- | -------- |
-| ELASTIC_PASSWORD | Matching password `ELASTIC_PASSWORD` from TubeArchivist | Required |
-| http.port        | Change the port ElasticSearch runs on | Optional |
-
 ## Update
 
 Always use the *latest* (the default) or a named semantic version tag for the docker images. The *unstable* tags see [CONTRIBUTING.md#beta-testing](https://github.com/tubearchivist/tubearchivist/blob/master/CONTRIBUTING.md#beta-testing).
@@ -106,7 +97,6 @@ You will see the current version number of **Tube Archivist** in the footer of t
 
 * This project is tested for updates between one or two releases maximum. Further updates back may or may not be supported. Ideally apply new updates at least once per month.
 * There can be breaking changes between updates, particularly as the application grows, new environment variables or settings might be required for you to set in the your docker-compose file. *Always* check the **release notes**: Any breaking changes will be marked there.
-* All testing and development is done with the Elasticsearch version number as mentioned in the provided *docker-compose.yml* file. This will be updated from time to time. Running an older version of Elasticsearch is most likely not going to result in any issues, but it's still recommended to run the same version as mentioned. Use `bbilly1/tubearchivist-es` to automatically get the recommended version.
 
 ## Getting Started
 
@@ -131,44 +121,10 @@ For more information on port collisions, check the docs.
 
 Here is a list of common errors and their solutions.
 
-### `vm.max_map_count`
-
-**Elastic Search** in Docker requires the kernel setting of the host machine `vm.max_map_count` to be set to at least 262144.
-
-To temporary set the value run:
-
-```shell
-sudo sysctl -w vm.max_map_count=262144
-```
-
-To apply the change permanently depends on your host operating system:
-
-* For example on Ubuntu Server add `vm.max_map_count = 262144` to the file `/etc/sysctl.conf`.
-* On Arch based systems create a file `/etc/sysctl.d/max_map_count.conf` with the content `vm.max_map_count = 262144`.
-* On any other platform look up in the documentation on how to pass kernel parameters.
-
-### Permissions for elasticsearch
-
-If you see a message similar to `Unable to access 'path.repo' (/usr/share/elasticsearch/data/snapshot)` or `failed to obtain node locks, tried [/usr/share/elasticsearch/data]` and `maybe these locations are not writable` when initially starting elasticsearch, that probably means the container is not allowed to write files to the volume.
-To fix that issue, shutdown the container and on your host machine run:
-
-```shell
-chown 1000:0 -R /path/to/mount/point
-```
-
-This will match the permissions with the **UID** and **GID** of elasticsearch process within the container and should fix the issue.
-
 ### Disk usage
 
-The Elasticsearch index will turn to ***read only*** if the disk usage of the container goes above 95% until the usage drops below 90% again, you will see error messages like `disk usage exceeded flood-stage watermark`.
-
-Similar to that, TubeArchivist will become all sorts of messed up when running out of disk space. There are some error messages in the logs when that happens, but it's best to make sure to have enough disk space before starting to download.
-
-## `error setting rlimit`
-
-If you are seeing errors like `failed to create shim: OCI runtime create failed` and `error during container init: error setting rlimits`, this means docker can't set these limits, usually because they are set at another place or are incompatible because of other reasons. Solution is to remove the `ulimits` key from the ES container in your docker compose and start again.
-
-This can happen if you have nested virtualizations, e.g. LXC running Docker in Proxmox.
+TubeArchivist requires enough free space for media and for SQLite's temporary
+WAL file. Keep free capacity available and back up the cache volume regularly.
 
 ## Known limitations
 

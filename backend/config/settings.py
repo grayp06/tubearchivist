@@ -11,12 +11,11 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
 import hashlib
-from os import environ, path
+from os import environ
 from pathlib import Path
 
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import ta_host_parser
-from common.src.ta_redis import RedisArchivist
 from corsheaders.defaults import default_headers
 
 try:
@@ -49,6 +48,7 @@ CORS_ALLOWED_ORIGINS = CSRF_TRUSTED_ORIGINS
 
 INSTALLED_APPS = [
     "django_celery_beat",
+    "django_celery_results",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -108,7 +108,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 
 CACHE_DIR = EnvironmentSettings.CACHE_DIR
-DB_PATH = path.join(CACHE_DIR, "db.sqlite3")
+DB_PATH = EnvironmentSettings.DATABASE_PATH
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -222,11 +222,14 @@ CORS_EXPOSE_HEADERS = ["X-Start-Timestamp"]
 # TA application settings
 TA_UPSTREAM = "https://github.com/tubearchivist/tubearchivist"
 TA_VERSION = "v0.5.10"
-try:
-    TA_START = RedisArchivist().get_message_str("STARTTIMESTAMP")
-except ValueError:
-    # fails in unittests bootstrap
-    pass
+TA_START = None
+
+# Celery uses SQLite as its durable broker and Django's database result backend.
+# A single worker process is intentional: it minimizes memory and SQLite write
+# contention while accepting lower throughput.
+CELERY_BROKER_URL = f"sqla+sqlite:///{DB_PATH}"
+CELERY_RESULT_BACKEND = "django-db"
+CELERY_WORKER_CONCURRENCY = 1
 
 # API
 REST_FRAMEWORK = {

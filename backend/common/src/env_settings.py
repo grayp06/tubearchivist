@@ -62,20 +62,12 @@ class EnvironmentSettings:
     APP_DIR: str = str(environ.get("TA_APP_DIR", "/app"))
     CACHE_DIR: str = str(environ.get("TA_CACHE_DIR", "/cache"))
 
-    # Redis
-    REDIS_CON: str = str(environ.get("REDIS_CON"))
+    # Namespace retained for compatibility with existing state keys.
     REDIS_NAME_SPACE: str = str(environ.get("REDIS_NAME_SPACE", "ta:"))
-
-    # ElasticSearch
-    ES_URL: str = str(environ.get("ES_URL"))
-    ES_PASS: str = get_password_from_file("ELASTIC_PASSWORD")
-    ES_USER: str = str(environ.get("ELASTIC_USER", "elastic"))
-    ES_SNAPSHOT_DIR: str = str(
-        environ.get(
-            "ES_SNAPSHOT_DIR", "/usr/share/elasticsearch/data/snapshot"
-        )
+    DATABASE_PATH: str = str(
+        environ.get("TA_DATABASE_PATH", path.join(CACHE_DIR, "db.sqlite3"))
     )
-    ES_DISABLE_VERIFY_SSL: bool = bool(environ.get("ES_DISABLE_VERIFY_SSL"))
+    SNAPSHOT_DIR: str = str(environ.get("TA_SNAPSHOT_DIR", path.join(CACHE_DIR, "backup")))
 
     def get_cache_root(self):
         """get root for web server"""
@@ -113,17 +105,13 @@ class EnvironmentSettings:
     def print_redis_conf(self):
         """debug redis conf paths"""
         print(f"""
-            REDIS_CON: {self.REDIS_CON}
-            REDIS_NAME_SPACE: {self.REDIS_NAME_SPACE}""")
+            DATABASE_PATH: {self.DATABASE_PATH}
+            STATE_NAME_SPACE: {self.REDIS_NAME_SPACE}""")
 
     def print_es_paths(self):
         """debug es conf"""
         print(f"""
-            ES_URL: {self.ES_URL}
-            ES_PASS: *****
-            ES_USER: {self.ES_USER}
-            ES_SNAPSHOT_DIR: {self.ES_SNAPSHOT_DIR}
-            ES_DISABLE_VERIFY_SSL: {self.ES_DISABLE_VERIFY_SSL}""")
+            DOCUMENT_STORE: SQLite ({self.DATABASE_PATH})""")
 
     def print_all(self):
         """print all"""
