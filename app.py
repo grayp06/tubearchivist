@@ -151,6 +151,17 @@ APP.jinja_env.filters["duration"] = format_duration
 APP.jinja_env.filters["filesize"] = format_size
 
 
+def page_url(page: int) -> str:
+    """Build a pagination URL while replacing, rather than duplicating, page."""
+    values = dict(request.view_args or {})
+    values.update(request.args.to_dict(flat=True))
+    values["page"] = page
+    return url_for(request.endpoint, **values)
+
+
+APP.jinja_env.globals["page_url"] = page_url
+
+
 def get_downloaded_file(info: dict, downloader: YoutubeDL) -> Path:
     """Resolve the exact file yt-dlp wrote to disk."""
     candidates = [

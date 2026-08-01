@@ -589,6 +589,10 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
     missing = 0
     with connect(database_path) as connection:
         known = {str(Path(row["file_path"]).resolve()): row["id"] for row in connection.execute("SELECT id, file_path FROM media")}
+        known_video_ids = {
+            str(row["video_id"])
+            for row in connection.execute("SELECT video_id FROM media")
+        }
     disk_files = {
         str(path.resolve()): path
         for path in download_dir.iterdir()
@@ -605,6 +609,8 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
         if match is None:
             continue
         video_id = match.group(1)
+        if video_id in known_video_ids:
+            continue
         info_path = next(
             (
                 candidate
@@ -625,6 +631,7 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
         info.setdefault("webpage_url", f"https://www.youtube.com/watch?v={video_id}")
         save_media(database_path, str(info["webpage_url"]), info, path)
         added += 1
+        known_video_ids.add(video_id)
     return {"added": added, "removed_missing": missing, "found": len(disk_files)}
 
 

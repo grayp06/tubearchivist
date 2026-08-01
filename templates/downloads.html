@@ -33,7 +33,6 @@
           {% if item.kind == 'video' %}
             <form method="post" action="{{ url_for('cancel_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Cancel</button></form>
             <form method="post" action="{{ url_for('ignore_download_page', download_id=item.id) }}"><button class="small danger" type="submit">Ignore</button></form>
-            <form method="post" action="{{ url_for('prioritize_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Prioritize</button></form>
           {% endif %}
         </div>
         <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
@@ -54,6 +53,7 @@
           {% if item.kind == 'video' %}
             <form method="post" action="{{ url_for('cancel_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Cancel</button></form>
             <form method="post" action="{{ url_for('ignore_download_page', download_id=item.id) }}"><button class="small danger" type="submit">Ignore</button></form>
+            <form method="post" action="{{ url_for('prioritize_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Prioritize</button></form>
           {% endif %}
         </div>
       </article>

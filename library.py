@@ -249,7 +249,15 @@ def initialize_database(database_path: Path) -> None:
 def _subtitle_text(file_path: Path) -> str | None:
     """Read bounded WebVTT sidecars into SQLite's searchable metadata."""
     fragments: list[str] = []
-    for subtitle in file_path.parent.glob(f"{file_path.stem}*.vtt"):
+    # YouTube output names normally contain ``[video-id]``. Avoid globbing the
+    # stem because square brackets have pattern syntax and skip valid sidecars.
+    for subtitle in file_path.parent.iterdir():
+        if not (
+            subtitle.is_file()
+            and subtitle.suffix.lower() == ".vtt"
+            and subtitle.name.startswith(file_path.stem)
+        ):
+            continue
         try:
             if subtitle.stat().st_size > 5 * 1024 * 1024:
                 continue
@@ -352,6 +360,64 @@ def save_media(
             ),
             "subtitle_text": _subtitle_text(resolved_file),
         }
+
+        # Reconciliation can index a file before its yt-dlp metadata exists.
+        # Upgrade that same row in place so user state and stable links survive.
+        existing = connection.execute(
+            """
+            SELECT id FROM media
+            WHERE file_path=? OR source_url=? OR webpage_url=?
+            ORDER BY CASE WHEN file_path=? THEN 0 ELSE 1 END, id
+            LIMIT 1
+            """,
+            (
+                str(resolved_file),
+                source_url,
+                values["webpage_url"],
+                str(resolved_file),
+            ),
+        ).fetchone()
+        identity = connection.execute(
+            "SELECT id FROM media WHERE extractor=? AND video_id=?",
+            (extractor, video_id),
+        ).fetchone()
+        if existing is not None and (
+            identity is None or int(identity["id"]) != int(existing["id"])
+        ):
+            existing_id = int(existing["id"])
+            if identity is not None:
+                duplicate_id = int(identity["id"])
+                connection.execute(
+                    "UPDATE downloads SET media_id=? WHERE media_id=?",
+                    (existing_id, duplicate_id),
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO playlist_media
+                        (playlist_id, media_id, position, added_at)
+                    SELECT playlist_id, ?, position, added_at
+                    FROM playlist_media WHERE media_id=?
+                    """,
+                    (existing_id, duplicate_id),
+                )
+                connection.execute(
+                    "DELETE FROM playlist_media WHERE media_id=?", (duplicate_id,)
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO media_tags (media_id, tag)
+                    SELECT ?, tag FROM media_tags WHERE media_id=?
+                    """,
+                    (existing_id, duplicate_id),
+                )
+                connection.execute(
+                    "DELETE FROM media_tags WHERE media_id=?", (duplicate_id,)
+                )
+                connection.execute("DELETE FROM media WHERE id=?", (duplicate_id,))
+            connection.execute(
+                "UPDATE media SET extractor=?, video_id=? WHERE id=?",
+                (extractor, video_id, existing_id),
+            )
         cursor = connection.execute(
             """
             INSERT INTO media (

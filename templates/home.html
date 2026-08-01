@@ -37,9 +37,9 @@
   {% endif %}
   {% if result.pages > 1 %}
     <nav class="pagination" aria-label="Library pages">
-      {% if result.page > 1 %}<a class="button secondary" href="?{{ request.args|urlencode }}&page={{ result.page - 1 }}">Previous</a>{% endif %}
+      {% if result.page > 1 %}<a class="button secondary" href="{{ page_url(result.page - 1) }}">Previous</a>{% endif %}
       <span>Page {{ result.page }} of {{ result.pages }} · {{ result.total }} videos</span>
-      {% if result.page < result.pages %}<a class="button secondary" href="?{{ request.args|urlencode }}&page={{ result.page + 1 }}">Next</a>{% endif %}
+      {% if result.page < result.pages %}<a class="button secondary" href="{{ page_url(result.page + 1) }}">Next</a>{% endif %}
     </nav>
   {% endif %}
 {% endblock %}

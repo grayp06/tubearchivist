@@ -14,5 +14,11 @@
   </form>
   <p class="muted">{{ result.total }} result{{ '' if result.total == 1 else 's' }}</p>
   {% if videos %}<section class="video-grid">{% for video in videos %}{% include "_video_card.html" %}{% endfor %}</section>{% else %}<div class="empty">No matching archived videos.</div>{% endif %}
-  {% if result.pages > 1 %}<nav class="pagination"><span>Page {{ result.page }} of {{ result.pages }}</span></nav>{% endif %}
+  {% if result.pages > 1 %}
+    <nav class="pagination" aria-label="Search result pages">
+      {% if result.page > 1 %}<a class="button secondary" href="{{ page_url(result.page - 1) }}">Previous</a>{% endif %}
+      <span>Page {{ result.page }} of {{ result.pages }}</span>
+      {% if result.page < result.pages %}<a class="button secondary" href="{{ page_url(result.page + 1) }}">Next</a>{% endif %}
+    </nav>
+  {% endif %}
 {% endblock %}

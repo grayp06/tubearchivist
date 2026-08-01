@@ -19,6 +19,7 @@ from app import (
     validate_settings,
     validate_advanced_settings,
     video_identity,
+    yt_dlp_download_options,
 )
 from features import (
     add_playlist_media,
@@ -186,6 +187,57 @@ class LibraryTests(unittest.TestCase):
             self.assertTrue(set_media_watched(database_path, first_id, True))
             self.assertEqual(get_media(database_path, first_id)["watched"], 1)
             self.assertEqual(get_media(database_path, first_id)["watch_progress"], 100)
+
+    def test_metadata_refresh_upgrades_reconciled_file_in_place(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            file_path = root / "Example [video-id].mp4"
+            file_path.write_bytes(b"video")
+            (root / "Example [video-id].en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nsearchable captions\n",
+                encoding="utf-8",
+            )
+            initialize_database(database_path)
+
+            reconciled_id = save_media(
+                database_path,
+                "https://www.youtube.com/watch?v=video-id",
+                {
+                    "id": "video-id",
+                    "extractor": "Filesystem",
+                    "title": "Example",
+                    "webpage_url": "https://www.youtube.com/watch?v=video-id",
+                },
+                file_path,
+            )
+            set_media_favorite(database_path, reconciled_id, True)
+            set_media_tags(database_path, reconciled_id, "keep-me")
+            update_media_progress(database_path, reconciled_id, 50)
+
+            refreshed_id = save_media(
+                database_path,
+                "https://www.youtube.com/watch?v=video-id",
+                {
+                    "id": "video-id",
+                    "extractor_key": "Youtube",
+                    "title": "Refreshed Example",
+                    "channel": "Example Channel",
+                    "channel_id": "channel-id",
+                    "webpage_url": "https://www.youtube.com/watch?v=video-id",
+                },
+                file_path,
+            )
+
+            self.assertEqual(refreshed_id, reconciled_id)
+            self.assertEqual(len(list_media(database_path)), 1)
+            refreshed = get_media(database_path, reconciled_id)
+            self.assertEqual(refreshed["extractor"], "Youtube")
+            self.assertEqual(refreshed["title"], "Refreshed Example")
+            self.assertEqual(refreshed["favorite"], 1)
+            self.assertEqual(refreshed["watch_progress"], 50)
+            self.assertEqual(refreshed["tags"], "keep-me")
+            self.assertIn("searchable captions", refreshed["subtitle_text"])
 
     def test_watch_progress_normalizes_thresholds_and_stays_watched(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -470,6 +522,50 @@ class DownloadQueueTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_advanced_settings_are_mapped_to_yt_dlp(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            download_dir = root / "downloads"
+            cookie_path = root / "cookies.txt"
+            download_dir.mkdir()
+            cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            initialize_database(database_path)
+            update_settings(
+                database_path,
+                {
+                    "download_quality": "480",
+                    "download_subtitles": 1,
+                    "subtitle_languages": "en,fr",
+                    "write_info_json": 1,
+                    "download_comments": 1,
+                    "sponsorblock_categories": "sponsor,selfpromo",
+                    "rate_limit": "64",
+                    "output_template": "%(title)s [%(id)s].%(ext)s",
+                    "cookie_path": str(cookie_path),
+                },
+            )
+            with (
+                patch("app.DATABASE_PATH", database_path),
+                patch("app.DOWNLOAD_DIR", download_dir),
+            ):
+                options = yt_dlp_download_options(1, {})
+
+            self.assertIn("height<=480", options["format"])
+            self.assertEqual(options["subtitleslangs"], ["en", "fr"])
+            self.assertTrue(options["writeinfojson"])
+            self.assertTrue(options["getcomments"])
+            self.assertEqual(options["ratelimit"], 64 * 1024)
+            self.assertEqual(options["cookiefile"], str(cookie_path))
+            self.assertEqual(
+                options["postprocessors"][0]["categories"],
+                ["sponsor", "selfpromo"],
+            )
+            self.assertEqual(
+                options["outtmpl"],
+                str(download_dir / "%(title)s [%(id)s].%(ext)s"),
+            )
+
     def test_defaults_validation_and_quality_formats(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "library.db"
@@ -586,6 +682,13 @@ class ArchiveFeatureTests(unittest.TestCase):
             orphan.write_bytes(b"orphan")
             scan = rescan_filesystem(database_path, downloads)
             self.assertEqual(scan["added"], 1)
+            duplicate = downloads / "Duplicate [orphan-id].mp4"
+            duplicate.write_bytes(b"duplicate")
+            second_scan = rescan_filesystem(database_path, downloads)
+            self.assertEqual(second_scan["added"], 0)
+            self.assertEqual(
+                get_media(database_path, 1)["file_path"], str(orphan.resolve())
+            )
             self.assertEqual(archive_stats(database_path)["videos"], 1)
             snapshot = create_snapshot(database_path, snapshots)
             self.assertTrue(snapshot.is_file())
@@ -595,6 +698,34 @@ class ArchiveFeatureTests(unittest.TestCase):
 
 
 class FlaskEndpointTests(unittest.TestCase):
+    def test_diagnostic_and_queue_apis(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "library.db"
+            initialize_database(database_path)
+            with patch("app.DATABASE_PATH", database_path):
+                client = APP.test_client()
+                health = client.get("/api/health")
+                self.assertEqual(health.status_code, 200)
+                self.assertEqual(health.get_json(), {"status": "ok"})
+                self.assertEqual(client.get("/api/jobs").get_json(), [])
+                self.assertEqual(client.get("/api/library").get_json(), [])
+
+                invalid = client.post("/api/downloads", json={})
+                self.assertEqual(invalid.status_code, 400)
+                queued = client.post(
+                    "/api/downloads", json={"url": "https://youtu.be/api-video"}
+                )
+                self.assertEqual(queued.status_code, 202)
+                self.assertEqual(queued.get_json()["status"], "queued")
+                self.assertEqual(len(client.get("/api/jobs").get_json()), 1)
+
+                api_missing = client.get("/api/not-found")
+                self.assertEqual(api_missing.status_code, 404)
+                self.assertEqual(api_missing.get_json(), {"error": "Not found."})
+                page_missing = client.get("/not-found")
+                self.assertEqual(page_missing.status_code, 404)
+                self.assertIn(b"Not found", page_missing.data)
+
     def test_archive_feature_pages_and_actions_are_server_rendered(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
