@@ -41,6 +41,23 @@ def get_password_from_file(env_var_name) -> str:
     return file_content
 
 
+def get_positive_int_env(name: str, default: int) -> int:
+    """Read a positive integer environment setting."""
+    raw_value = environ.get(name)
+    if raw_value is None:
+        return default
+
+    try:
+        value = int(raw_value)
+    except ValueError as err:
+        raise ValueError(f"{name} must be a positive integer") from err
+
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+
+    return value
+
+
 class EnvironmentSettings:
     """
     Handle settings for the application that are driven from the environment.

@@ -18,6 +18,8 @@ services:
       - TA_PASSWORD=verysecret              # your initial TA credentials
       - ELASTIC_PASSWORD=verysecret         # set password for Elasticsearch
       - TZ=America/New_York                 # set your time zone
+      - TA_WEB_WORKERS=1                    # raise for more concurrent web requests
+      - TA_TASK_WORKERS=1                   # raise for parallel background jobs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
       interval: 2m
@@ -28,9 +30,11 @@ services:
       - archivist-es
       - archivist-redis
   archivist-redis:
-    image: redis
+    image: redis:alpine
     container_name: archivist-redis
     restart: unless-stopped
+    # Persist queues more aggressively; this favors disk I/O over lost work.
+    command: redis-server --save 60 1 --appendonly yes --appendfsync everysec
     expose:
       - "6379"
     volumes:
@@ -43,7 +47,10 @@ services:
     restart: unless-stopped
     environment:
       - "ELASTIC_PASSWORD=verysecret"       # matching Elasticsearch password
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      # A smaller heap is slower on large searches, but halves the largest
+      # resident allocation in the default stack.
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "indices.memory.index_buffer_size=5%"
       - "xpack.security.enabled=true"
       - "discovery.type=single-node"
       - "path.repo=/usr/share/elasticsearch/data/snapshot"

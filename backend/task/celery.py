@@ -26,3 +26,8 @@ app.config_from_object(
 )
 app.autodiscover_tasks()
 app.conf.timezone = EnvironmentSettings.TZ
+
+# Do not let a worker reserve several potentially expensive download/indexing
+# jobs. This intentionally exchanges throughput for a predictable footprint.
+app.conf.worker_prefetch_multiplier = 1
+app.conf.result_expires = 60 * 60 * 24

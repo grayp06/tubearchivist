@@ -9,6 +9,12 @@ else
   LOGLEVEL="INFO"
 fi
 
+TA_TASK_WORKERS="${TA_TASK_WORKERS:-1}"
+if ! [[ "$TA_TASK_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "TA_TASK_WORKERS must be a positive integer" >&2
+    exit 1
+fi
+
 # update yt-dlp if needed
 if [[ "${TA_AUTO_UPDATE_YTDLP,,}" =~ ^(release|nightly)$ ]]; then
     echo "Updating yt-dlp..."
@@ -34,7 +40,7 @@ python manage.py ta_startup
 nginx &
 celery -A task.celery worker \
     --loglevel=$LOGLEVEL \
-    --concurrency 4 \
+    --concurrency "$TA_TASK_WORKERS" \
     --max-tasks-per-child 5 \
     --max-memory-per-child 150000 &
 
