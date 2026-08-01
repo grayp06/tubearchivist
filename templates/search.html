@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Search · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading"><div><h1>Search</h1><div class="muted">Search titles, descriptions, channels, IDs, tags, and downloaded subtitle text.</div></div></div>
+  <form class="filter-form" method="get">
+    <input type="search" name="q" autofocus value="{{ request.args.get('q', '') }}" placeholder="Search the archive" aria-label="Search archive">
+    <select name="channel"><option value="">All channels</option>{% for channel in channels %}<option value="{{ channel.id }}" {% if request.args.get('channel') == channel.id|string %}selected{% endif %}>{{ channel.name }}</option>{% endfor %}</select>
+    <select name="watched"><option value="all">All watched states</option><option value="unwatched" {% if request.args.get('watched') == 'unwatched' %}selected{% endif %}>Unwatched</option><option value="watched" {% if request.args.get('watched') == 'watched' %}selected{% endif %}>Watched</option></select>
+    <select name="type">{% for value, label in [('all','All types'),('video','Videos'),('short','Shorts'),('stream','Streams')] %}<option value="{{ value }}" {% if request.args.get('type') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    <select name="sort">{% for value, label in [('downloaded','Downloaded'),('published','Published'),('title','Title'),('duration','Duration'),('size','File size')] %}<option value="{{ value }}" {% if request.args.get('sort', 'downloaded') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    <select name="order"><option value="desc">Descending</option><option value="asc" {% if request.args.get('order') == 'asc' %}selected{% endif %}>Ascending</option></select>
+    <label class="inline-form"><input type="checkbox" name="favorite" value="1" {% if request.args.get('favorite') == '1' %}checked{% endif %}> Favourites</label>
+    <button type="submit">Search</button>
+  </form>
+  <p class="muted">{{ result.total }} result{{ '' if result.total == 1 else 's' }}</p>
+  {% if videos %}<section class="video-grid">{% for video in videos %}{% include "_video_card.html" %}{% endfor %}</section>{% else %}<div class="empty">No matching archived videos.</div>{% endif %}
+  {% if result.pages > 1 %}<nav class="pagination"><span>Page {{ result.page }} of {{ result.pages }}</span></nav>{% endif %}
+{% endblock %}

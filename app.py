@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -19,7 +20,40 @@ from flask import (
     render_template,
     request,
     send_file,
+    send_from_directory,
     url_for,
+)
+from features import (
+    add_playlist_media,
+    add_subscription,
+    archive_stats,
+    attach_download_to_playlist,
+    cancel_all_queued,
+    clear_download_history,
+    create_playlist,
+    create_snapshot,
+    delete_playlist,
+    delete_subscription,
+    export_archive,
+    get_playlist,
+    list_playlist_media,
+    list_playlists,
+    list_snapshots,
+    list_subscriptions,
+    move_playlist_media,
+    parse_subscriptions_opml,
+    prioritize_download,
+    queue_subscription_scan,
+    remove_playlist_media,
+    rescan_filesystem,
+    retry_download,
+    save_external_playlist,
+    search_media,
+    set_download_playlist,
+    set_media_favorite,
+    set_media_tags,
+    subscriptions_opml,
+    update_subscription,
 )
 from library import (
     add_ignored,
@@ -27,6 +61,7 @@ from library import (
     claim_next_download,
     count_collection_items,
     delete_media_and_ignore,
+    delete_empty_channel,
     enqueue_collection_items,
     enqueue_download,
     get_channel,
@@ -58,6 +93,7 @@ APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.environ.get("APP_PORT", "8080"))
 DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "/downloads"))
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "/data/library.db"))
+SNAPSHOT_DIR = Path(os.environ.get("SNAPSHOT_DIR", "/data/snapshots"))
 
 APP = Flask(__name__)
 APP.config["MAX_CONTENT_LENGTH"] = 8192
@@ -141,6 +177,16 @@ def get_downloaded_file(info: dict, downloader: YoutubeDL) -> Path:
     raise FileNotFoundError("yt-dlp completed but its output file was not found.")
 
 
+def delete_media_files(file_path: Path) -> None:
+    """Delete one archived media file and its same-stem yt-dlp sidecars."""
+    prefix = f"{file_path.stem}."
+    for candidate in file_path.parent.iterdir():
+        if candidate.is_file() and (
+            candidate.name == file_path.name or candidate.name.startswith(prefix)
+        ):
+            candidate.unlink(missing_ok=True)
+
+
 def quality_format(quality: str) -> str:
     """Translate a persisted quality preset into a yt-dlp format selector."""
     if quality == "best":
@@ -165,6 +211,103 @@ def validate_settings(collection_limit: object, quality: object) -> dict:
     if quality_value not in QUALITY_OPTIONS:
         raise ValueError("Choose a valid download quality.")
     return {"collection_limit": limit, "download_quality": quality_value}
+
+
+def validate_advanced_settings(form: object) -> dict:
+    """Validate optional low-memory downloader and library settings."""
+    values = validate_settings(form.get("collection_limit"), form.get("download_quality"))
+    try:
+        page_size = int(form.get("page_size", 24))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Page size must be a whole number.") from exc
+    if not 6 <= page_size <= 100:
+        raise ValueError("Page size must be between 6 and 100.")
+    languages = str(form.get("subtitle_languages", "en")).strip() or "en"
+    if len(languages) > 100:
+        raise ValueError("Subtitle language list is too long.")
+    categories = str(form.get("sponsorblock_categories", "")).strip()
+    rate_limit = str(form.get("rate_limit", "")).strip()
+    if rate_limit:
+        try:
+            if int(rate_limit) < 1:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("Rate limit must be blank or a positive KiB/s value.") from exc
+    output_template = str(
+        form.get("output_template", "%(title).180B [%(id)s].%(ext)s")
+    ).strip()
+    if not output_template or any(marker in output_template for marker in ("/", "\\", "..")):
+        raise ValueError("Output template must be a filename without folders.")
+    cookie_path = Path(
+        str(form.get("cookie_path", DATABASE_PATH.parent / "cookies.txt")).strip()
+    ).resolve()
+    try:
+        cookie_path.relative_to(DATABASE_PATH.parent.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            "Cookie file must be stored inside the application data folder."
+        ) from exc
+    values.update(
+        {
+            "page_size": page_size,
+            "download_subtitles": int(form.get("download_subtitles") == "1"),
+            "subtitle_languages": languages,
+            "write_info_json": int(form.get("write_info_json") == "1"),
+            "sponsorblock_categories": categories,
+            "cookie_path": str(cookie_path),
+            "rate_limit": rate_limit,
+            "output_template": output_template,
+            "download_comments": int(form.get("download_comments") == "1"),
+        }
+    )
+    return values
+
+
+def yt_dlp_download_options(download_id: int, state: dict[str, float]) -> dict:
+    """Build yt-dlp options from SQLite settings only when work is claimed."""
+    settings = get_settings(DATABASE_PATH)
+    options: dict = {
+        "format": quality_format(settings["download_quality"]),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "outtmpl": str(DOWNLOAD_DIR / settings["output_template"]),
+        "progress_hooks": [lambda data: progress_hook(download_id, state, data)],
+        "postprocessor_hooks": [lambda _data: progress_hook(download_id, state, {})],
+        "quiet": True,
+        "noprogress": True,
+        "no_warnings": True,
+        "writeinfojson": settings["write_info_json"],
+        "getcomments": settings["download_comments"],
+    }
+    if settings["download_subtitles"]:
+        options.update(
+            {
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": [
+                    item.strip()
+                    for item in settings["subtitle_languages"].split(",")
+                    if item.strip()
+                ],
+                "subtitlesformat": "vtt/best",
+            }
+        )
+    cookie_path = Path(settings["cookie_path"])
+    if cookie_path.is_file():
+        options["cookiefile"] = str(cookie_path)
+    if settings["rate_limit"]:
+        options["ratelimit"] = int(settings["rate_limit"]) * 1024
+    categories = [
+        item.strip()
+        for item in settings["sponsorblock_categories"].split(",")
+        if item.strip()
+    ]
+    if categories:
+        options["postprocessors"] = [
+            {"key": "SponsorBlock", "categories": categories},
+            {"key": "ModifyChapters", "remove_sponsor_segments": categories},
+        ]
+    return options
 
 
 def choose_channel_thumbnail(info: dict) -> str | None:
@@ -298,26 +441,15 @@ def download_video(download: dict) -> None:
     """Download one known video queue row and persist its media record."""
     download_id = int(download["id"])
     url = str(download["source_url"])
-    settings = get_settings(DATABASE_PATH)
     progress_state = {"last_write": 0.0}
-    options = {
-        "format": quality_format(settings["download_quality"]),
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "outtmpl": str(DOWNLOAD_DIR / "%(title).180B [%(id)s].%(ext)s"),
-        "progress_hooks": [
-            lambda data: progress_hook(download_id, progress_state, data)
-        ],
-        "quiet": True,
-        "noprogress": True,
-        "no_warnings": True,
-    }
+    options = yt_dlp_download_options(download_id, progress_state)
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(url, download=True)
         if is_download_cancelled(DATABASE_PATH, download_id):
             raise DownloadCancelled("Download cancelled by user.")
         file_path = get_downloaded_file(info, downloader).resolve()
         media_id = save_media(DATABASE_PATH, url, info, file_path)
+        attach_download_to_playlist(DATABASE_PATH, download_id, media_id)
     update_download(
         DATABASE_PATH,
         download_id,
@@ -351,6 +483,13 @@ def expand_collection(download: dict, info: dict) -> None:
         percent="Expanding",
         progress=0,
     )
+    if kind == "playlist":
+        playlist_id = save_external_playlist(
+            DATABASE_PATH,
+            str(download["source_url"]),
+            info,
+        )
+        set_download_playlist(DATABASE_PATH, download_id, playlist_id)
 
     position = 0
     total_items = count_collection_items(DATABASE_PATH, download_id)
@@ -447,7 +586,7 @@ def download_worker() -> None:
         QUEUE_WAKE.clear()
         download = claim_next_download(DATABASE_PATH)
         if download is None:
-            QUEUE_WAKE.wait(timeout=5)
+            QUEUE_WAKE.wait()
             continue
         run_download(download)
 
@@ -501,13 +640,34 @@ def add_security_headers(response: Response) -> Response:
 @APP.get("/")
 def home_page() -> str:
     """Show the most recently downloaded videos."""
-    return render_template("home.html", videos=list_media(DATABASE_PATH, limit=24))
+    settings = get_settings(DATABASE_PATH)
+    result = search_media(
+        DATABASE_PATH,
+        query=request.args.get("q", ""),
+        watched=request.args.get("watched", "all"),
+        favorite=request.args.get("favorite") == "1",
+        video_type=request.args.get("type", "all"),
+        sort=request.args.get("sort", "downloaded"),
+        order=request.args.get("order", "desc"),
+        page=request.args.get("page", 1, type=int),
+        page_size=settings["page_size"],
+    )
+    return render_template(
+        "home.html",
+        videos=result["items"],
+        result=result,
+        playlists=list_playlists(DATABASE_PATH),
+    )
 
 
 @APP.get("/channels")
 def channels_page() -> str:
     """Show normalized channel records and their library counts."""
-    return render_template("channels.html", channels=list_channels(DATABASE_PATH))
+    return render_template(
+        "channels.html",
+        channels=list_channels(DATABASE_PATH),
+        subscriptions=list_subscriptions(DATABASE_PATH),
+    )
 
 
 @APP.get("/channels/<int:channel_id>")
@@ -520,13 +680,171 @@ def channel_page(channel_id: int) -> str:
         "channel.html",
         channel=channel,
         videos=list_channel_media(DATABASE_PATH, channel_id),
+        playlists=list_playlists(DATABASE_PATH),
     )
+
+
+@APP.post("/channels/<int:channel_id>/delete-ignore")
+def delete_channel_page(channel_id: int) -> Response:
+    channel = get_channel(DATABASE_PATH, channel_id)
+    if channel is None:
+        abort(404)
+    videos = list_channel_media(DATABASE_PATH, channel_id)
+    download_root = DOWNLOAD_DIR.resolve()
+    paths = []
+    for video in videos:
+        path = Path(video["file_path"]).resolve()
+        try:
+            path.relative_to(download_root)
+        except ValueError:
+            abort(400)
+        paths.append((video["id"], path))
+    for media_id, path in paths:
+        delete_media_and_ignore(DATABASE_PATH, media_id)
+        delete_media_files(path)
+    if not delete_empty_channel(DATABASE_PATH, channel_id):
+        abort(409)
+    return redirect(url_for("channels_page"), code=303)
+
+
+@APP.get("/search")
+def search_page() -> str:
+    """Search archived metadata, tags, descriptions, and indexed subtitles."""
+    settings = get_settings(DATABASE_PATH)
+    result = search_media(
+        DATABASE_PATH,
+        query=request.args.get("q", ""),
+        channel_id=request.args.get("channel", type=int),
+        watched=request.args.get("watched", "all"),
+        favorite=request.args.get("favorite") == "1",
+        video_type=request.args.get("type", "all"),
+        sort=request.args.get("sort", "downloaded"),
+        order=request.args.get("order", "desc"),
+        page=request.args.get("page", 1, type=int),
+        page_size=settings["page_size"],
+    )
+    return render_template(
+        "search.html",
+        videos=result["items"],
+        result=result,
+        channels=list_channels(DATABASE_PATH),
+        playlists=list_playlists(DATABASE_PATH),
+    )
+
+
+@APP.get("/playlists")
+def playlists_page() -> str:
+    return render_template("playlists.html", playlists=list_playlists(DATABASE_PATH))
+
+
+@APP.post("/playlists")
+def create_playlist_page() -> tuple[str, int] | Response:
+    try:
+        create_playlist(
+            DATABASE_PATH,
+            str(request.form.get("name", "")),
+            str(request.form.get("description", "")),
+        )
+    except ValueError as exc:
+        return render_template("playlists.html", playlists=list_playlists(DATABASE_PATH), error=str(exc)), 400
+    return redirect(url_for("playlists_page"), code=303)
+
+
+@APP.get("/playlists/<int:playlist_id>")
+def playlist_page(playlist_id: int) -> str:
+    playlist = get_playlist(DATABASE_PATH, playlist_id)
+    if playlist is None:
+        abort(404)
+    return render_template(
+        "playlist.html",
+        playlist=playlist,
+        videos=list_playlist_media(DATABASE_PATH, playlist_id),
+    )
+
+
+@APP.post("/playlists/<int:playlist_id>/delete")
+def delete_playlist_page(playlist_id: int) -> Response:
+    if not delete_playlist(DATABASE_PATH, playlist_id):
+        abort(404)
+    return redirect(url_for("playlists_page"), code=303)
+
+
+@APP.post("/playlists/<int:playlist_id>/videos/<int:media_id>")
+def add_to_playlist_page(playlist_id: int, media_id: int) -> Response:
+    if not add_playlist_media(DATABASE_PATH, playlist_id, media_id):
+        abort(404)
+    target = request.form.get("next") or url_for("playlist_page", playlist_id=playlist_id)
+    return redirect(target if target.startswith("/") and not target.startswith("//") else "/", code=303)
+
+
+@APP.post("/playlists/<int:playlist_id>/videos/<int:media_id>/remove")
+def remove_from_playlist_page(playlist_id: int, media_id: int) -> Response:
+    if not remove_playlist_media(DATABASE_PATH, playlist_id, media_id):
+        abort(404)
+    return redirect(url_for("playlist_page", playlist_id=playlist_id), code=303)
+
+
+@APP.post("/playlists/<int:playlist_id>/videos/<int:media_id>/move")
+def move_playlist_video_page(playlist_id: int, media_id: int) -> Response:
+    if not move_playlist_media(
+        DATABASE_PATH,
+        playlist_id,
+        media_id,
+        str(request.form.get("direction", "")),
+    ):
+        abort(404)
+    return redirect(url_for("playlist_page", playlist_id=playlist_id), code=303)
+
+
+@APP.post("/subscriptions")
+def add_subscription_page() -> Response:
+    url = validate_url(request.form.get("url"))
+    kind = collection_kind(url)
+    add_subscription(DATABASE_PATH, url, kind, request.form.get("name"))
+    QUEUE_WAKE.set()
+    return redirect(url_for("channels_page"), code=303)
+
+
+@APP.post("/subscriptions/<int:subscription_id>/toggle")
+def toggle_subscription_page(subscription_id: int) -> Response:
+    enabled = request.form.get("enabled") == "1"
+    if not update_subscription(DATABASE_PATH, subscription_id, enabled=enabled):
+        abort(404)
+    return redirect(url_for("channels_page"), code=303)
+
+
+@APP.post("/subscriptions/<int:subscription_id>/delete")
+def delete_subscription_page(subscription_id: int) -> Response:
+    if not delete_subscription(DATABASE_PATH, subscription_id):
+        abort(404)
+    return redirect(url_for("channels_page"), code=303)
+
+
+@APP.post("/subscriptions/scan")
+def scan_subscriptions_page() -> Response:
+    queued = queue_subscription_scan(DATABASE_PATH)
+    if queued:
+        QUEUE_WAKE.set()
+    return redirect(url_for("downloads_page", scanned=queued), code=303)
+
+
+@APP.get("/stats")
+def stats_page() -> str:
+    return render_template("stats.html", stats=archive_stats(DATABASE_PATH))
 
 
 @APP.get("/downloads")
 def downloads_page() -> str:
     """Show the durable queue grouped by state."""
     downloads = list_downloads(DATABASE_PATH)
+    queue_query = request.args.get("q", "").strip().casefold()
+    if queue_query:
+        downloads = [
+            item
+            for item in downloads
+            if queue_query
+            in f"{item.get('title') or ''} {item.get('source_url') or ''} {item.get('error') or ''}".casefold()
+        ]
     return render_template(
         "downloads.html",
         active=[item for item in downloads if item["status"] == "downloading"],
@@ -537,6 +855,7 @@ def downloads_page() -> str:
             if item["status"] in {"complete", "error", "cancelled"}
         ],
         queued_id=request.args.get("queued", type=int),
+        scanned=request.args.get("scanned", type=int),
     )
 
 
@@ -544,7 +863,14 @@ def downloads_page() -> str:
 def add_download_page() -> tuple[str, int] | Response:
     """Append a form submission to the persistent queue."""
     try:
-        download = enqueue_url(request.form.get("url"))
+        submitted_url = validate_url(request.form.get("url"))
+        download = enqueue_url(submitted_url)
+        if request.form.get("subscribe") == "1" and download["kind"] != "video":
+            add_subscription(
+                DATABASE_PATH,
+                submitted_url,
+                collection_kind(submitted_url),
+            )
     except ValueError as exc:
         downloads = list_downloads(DATABASE_PATH)
         return (
@@ -558,6 +884,7 @@ def add_download_page() -> tuple[str, int] | Response:
                     if item["status"] in {"complete", "error", "cancelled"}
                 ],
                 queued_id=None,
+                scanned=None,
                 error=str(exc),
             ),
             400,
@@ -594,6 +921,35 @@ def ignore_download_page(download_id: int) -> Response:
     return redirect(url_for("downloads_page"), code=303)
 
 
+@APP.post("/downloads/<int:download_id>/priority")
+def prioritize_download_page(download_id: int) -> Response:
+    if not prioritize_download(DATABASE_PATH, download_id):
+        abort(404)
+    QUEUE_WAKE.set()
+    return redirect(url_for("downloads_page"), code=303)
+
+
+@APP.post("/downloads/<int:download_id>/retry")
+def retry_download_page(download_id: int) -> Response:
+    if not retry_download(DATABASE_PATH, download_id):
+        abort(404)
+    QUEUE_WAKE.set()
+    return redirect(url_for("downloads_page"), code=303)
+
+
+@APP.post("/downloads/history/clear")
+def clear_download_history_page() -> Response:
+    clear_download_history(DATABASE_PATH)
+    return redirect(url_for("downloads_page"), code=303)
+
+
+@APP.post("/downloads/queued/cancel")
+def cancel_all_downloads_page() -> Response:
+    cancel_all_queued(DATABASE_PATH)
+    QUEUE_WAKE.set()
+    return redirect(url_for("downloads_page"), code=303)
+
+
 @APP.get("/settings")
 def settings_page() -> str:
     """Show persistent downloader settings."""
@@ -602,7 +958,10 @@ def settings_page() -> str:
         settings=get_settings(DATABASE_PATH),
         quality_options=QUALITY_OPTIONS,
         ignored=list_ignored(DATABASE_PATH),
+        snapshots=list_snapshots(SNAPSHOT_DIR),
+        stats=archive_stats(DATABASE_PATH),
         saved=request.args.get("saved") == "1",
+        action=request.args.get("action"),
     )
 
 
@@ -610,21 +969,22 @@ def settings_page() -> str:
 def update_settings_page() -> tuple[str, int] | Response:
     """Validate and persist downloader settings."""
     try:
-        settings = validate_settings(
-            request.form.get("collection_limit"),
-            request.form.get("download_quality"),
-        )
+        settings = validate_advanced_settings(request.form)
     except ValueError as exc:
-        current = {
-            "collection_limit": request.form.get("collection_limit", ""),
-            "download_quality": request.form.get("download_quality", ""),
-        }
+        current = get_settings(DATABASE_PATH)
+        for key in current:
+            if key in request.form:
+                current[key] = request.form.get(key, "")
+        for key in ("download_subtitles", "write_info_json", "download_comments"):
+            current[key] = request.form.get(key) == "1"
         return (
             render_template(
                 "settings.html",
                 settings=current,
                 quality_options=QUALITY_OPTIONS,
                 ignored=list_ignored(DATABASE_PATH),
+                snapshots=list_snapshots(SNAPSHOT_DIR),
+                stats=archive_stats(DATABASE_PATH),
                 saved=False,
                 error=str(exc),
             ),
@@ -632,6 +992,86 @@ def update_settings_page() -> tuple[str, int] | Response:
         )
     update_settings(DATABASE_PATH, settings)
     return redirect(url_for("settings_page", saved=1), code=303)
+
+
+@APP.post("/settings/cookies")
+def upload_cookies_page() -> Response:
+    upload = request.files.get("cookies")
+    if upload is None or not upload.filename:
+        abort(400)
+    content = upload.read(2 * 1024 * 1024 + 1)
+    if len(content) > 2 * 1024 * 1024:
+        abort(413)
+    cookie_path = Path(get_settings(DATABASE_PATH)["cookie_path"])
+    cookie_path.parent.mkdir(parents=True, exist_ok=True)
+    cookie_path.write_bytes(content)
+    return redirect(url_for("settings_page", action="cookies"), code=303)
+
+
+@APP.post("/settings/rescan")
+def rescan_page() -> Response:
+    result = rescan_filesystem(DATABASE_PATH, DOWNLOAD_DIR)
+    return redirect(
+        url_for(
+            "settings_page",
+            action=f"rescan:{result['added']}:{result['removed_missing']}",
+        ),
+        code=303,
+    )
+
+
+@APP.post("/settings/snapshots")
+def create_snapshot_page() -> Response:
+    create_snapshot(DATABASE_PATH, SNAPSHOT_DIR)
+    return redirect(url_for("settings_page", action="snapshot"), code=303)
+
+
+@APP.get("/settings/snapshots/<path:name>")
+def download_snapshot_page(name: str) -> Response:
+    if not name.startswith("library-") or not name.endswith(".db"):
+        abort(404)
+    return send_from_directory(SNAPSHOT_DIR, name, as_attachment=True)
+
+
+@APP.get("/settings/export.json")
+def export_archive_page() -> Response:
+    payload = json.dumps(export_archive(DATABASE_PATH), ensure_ascii=False, default=str)
+    return Response(
+        payload,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=tubearchivist-lite-export.json"},
+    )
+
+
+@APP.get("/settings/subscriptions.opml")
+def export_subscriptions_page() -> Response:
+    return Response(
+        subscriptions_opml(DATABASE_PATH),
+        mimetype="text/xml",
+        headers={"Content-Disposition": "attachment; filename=subscriptions.opml"},
+    )
+
+
+@APP.post("/settings/subscriptions.opml")
+def import_subscriptions_page() -> Response:
+    upload = request.files.get("opml")
+    if upload is None or not upload.filename:
+        abort(400)
+    content = upload.read(1024 * 1024 + 1)
+    if len(content) > 1024 * 1024:
+        abort(413)
+    try:
+        items = parse_subscriptions_opml(content)
+        for item in items:
+            add_subscription(
+                DATABASE_PATH,
+                validate_url(item["source_url"]),
+                item["kind"],
+                item["name"],
+            )
+    except ValueError:
+        abort(400)
+    return redirect(url_for("settings_page", action=f"opml:{len(items)}"), code=303)
 
 
 @APP.post("/settings/ignored/<int:ignored_id>/remove")
@@ -648,7 +1088,11 @@ def watch_page(media_id: int) -> str:
     video = get_media(DATABASE_PATH, media_id)
     if video is None:
         abort(404)
-    return render_template("watch.html", video=video)
+    return render_template(
+        "watch.html",
+        video=video,
+        playlists=list_playlists(DATABASE_PATH),
+    )
 
 
 @APP.post("/videos/<int:media_id>/watched")
@@ -661,6 +1105,50 @@ def watched_api(media_id: int) -> Response:
     if not target.startswith("/") or target.startswith("//"):
         target = url_for("home_page")
     return redirect(target, code=303)
+
+
+@APP.post("/videos/<int:media_id>/favorite")
+def favorite_video_page(media_id: int) -> Response:
+    if not set_media_favorite(DATABASE_PATH, media_id, request.form.get("favorite") == "1"):
+        abort(404)
+    target = request.form.get("next") or url_for("home_page")
+    return redirect(target if target.startswith("/") and not target.startswith("//") else "/", code=303)
+
+
+@APP.post("/videos/<int:media_id>/tags")
+def tag_video_page(media_id: int) -> Response:
+    if not set_media_tags(DATABASE_PATH, media_id, str(request.form.get("tags", ""))):
+        abort(404)
+    return redirect(url_for("watch_page", media_id=media_id), code=303)
+
+
+@APP.post("/videos/<int:media_id>/refresh")
+def refresh_video_page(media_id: int) -> Response:
+    """Manually refresh one video's metadata without downloading it again."""
+    video = get_media(DATABASE_PATH, media_id)
+    if video is None:
+        abort(404)
+    file_path = Path(video["file_path"]).resolve()
+    try:
+        file_path.relative_to(DOWNLOAD_DIR.resolve())
+    except ValueError:
+        abort(400)
+    options: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+    cookie_path = Path(get_settings(DATABASE_PATH)["cookie_path"])
+    if cookie_path.is_file():
+        options["cookiefile"] = str(cookie_path)
+    try:
+        with YoutubeDL(options) as downloader:
+            info = downloader.extract_info(video["webpage_url"] or video["source_url"], download=False)
+        save_media(DATABASE_PATH, video["source_url"], info, file_path)
+    except Exception as exc:
+        return render_template(
+            "watch.html",
+            video=video,
+            playlists=list_playlists(DATABASE_PATH),
+            error=f"Metadata refresh failed: {exc}",
+        ), 502
+    return redirect(url_for("watch_page", media_id=media_id), code=303)
 
 
 @APP.post("/videos/<int:media_id>/delete-ignore")
@@ -676,7 +1164,7 @@ def delete_ignore_page(media_id: int) -> Response:
         abort(400)
     if delete_media_and_ignore(DATABASE_PATH, media_id) is None:
         abort(404)
-    file_path.unlink(missing_ok=True)
+    delete_media_files(file_path)
     target = request.form.get("next") or url_for("home_page")
     if not target.startswith("/") or target.startswith("//"):
         target = url_for("home_page")

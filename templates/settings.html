@@ -5,6 +5,7 @@
     <div><h1>Settings</h1><div class="muted">Persistent downloader defaults stored in SQLite.</div></div>
   </div>
   {% if saved %}<p class="notice" role="status">Settings saved. New queue work will use these values.</p>{% endif %}
+  {% if action == 'cookies' %}<p class="notice">Cookie file uploaded.</p>{% elif action == 'snapshot' %}<p class="notice">SQLite snapshot created.</p>{% elif action and action.startswith('rescan:') %}<p class="notice">Filesystem reconciliation completed.</p>{% elif action and action.startswith('opml:') %}<p class="notice">Subscriptions imported from OPML.</p>{% endif %}
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
   <form class="settings-form panel" method="post" action="{{ url_for('update_settings_page') }}">
     <div class="settings-field">
@@ -12,6 +13,14 @@
       <input id="collection-limit" name="collection_limit" type="number" min="1" max="10000" step="1" required value="{{ settings.collection_limit }}">
       <p class="settings-help">At most this many entries are inspected per channel or playlist submission. Already archived and already queued videos do not consume a download slot.</p>
     </div>
+    <div class="settings-field"><label for="page-size">Videos per page</label><input id="page-size" name="page_size" type="number" min="6" max="100" value="{{ settings.page_size }}"><p class="settings-help">Smaller pages reduce response size and browser memory.</p></div>
+    <div class="settings-field"><label><input name="download_subtitles" type="checkbox" value="1" {% if settings.download_subtitles %}checked{% endif %}> Download subtitles</label><input name="subtitle_languages" value="{{ settings.subtitle_languages }}" placeholder="en, en-orig"><p class="settings-help">Comma-separated yt-dlp subtitle language selectors. Downloaded VTT text is indexed for archive search.</p></div>
+    <div class="settings-field"><label><input name="write_info_json" type="checkbox" value="1" {% if settings.write_info_json %}checked{% endif %}> Write yt-dlp info JSON sidecars</label></div>
+    <div class="settings-field"><label for="sponsorblock">SponsorBlock categories to remove</label><input id="sponsorblock" name="sponsorblock_categories" value="{{ settings.sponsorblock_categories }}" placeholder="sponsor, selfpromo"><p class="settings-help">Leave blank to disable. Categories are passed to yt-dlp's built-in SponsorBlock postprocessors.</p></div>
+    <div class="settings-field"><label for="rate-limit">Download rate limit (KiB/s)</label><input id="rate-limit" name="rate_limit" inputmode="numeric" value="{{ settings.rate_limit }}" placeholder="Blank for unlimited"></div>
+    <div class="settings-field"><label for="output-template">Output filename template</label><input id="output-template" name="output_template" required value="{{ settings.output_template }}"><p class="settings-help">Filename only; folders and parent traversal are rejected.</p></div>
+    <div class="settings-field"><label for="cookie-path">Cookie file path</label><input id="cookie-path" name="cookie_path" required value="{{ settings.cookie_path }}"></div>
+    <div class="settings-field"><label><input name="download_comments" type="checkbox" value="1" {% if settings.download_comments %}checked{% endif %}> Include comments in metadata</label><p class="settings-help">Disabled by default because large comment sets increase extraction memory.</p></div>
     <div class="settings-field">
       <label for="download-quality">Video quality</label>
       <select id="download-quality" name="download_quality" required>
@@ -23,6 +32,25 @@
     </div>
     <div><button type="submit">Save settings</button></div>
   </form>
+
+  <h2>Maintenance and portability</h2>
+  <div class="split">
+    <section class="panel stack">
+      <h3>Local maintenance</h3>
+      <form method="post" action="{{ url_for('rescan_page') }}"><button class="secondary" type="submit">Reconcile download folder</button></form>
+      <form method="post" action="{{ url_for('create_snapshot_page') }}"><button class="secondary" type="submit">Create SQLite snapshot</button></form>
+      <a class="button secondary" href="{{ url_for('export_archive_page') }}">Export archive JSON</a>
+      <a class="button secondary" href="{{ url_for('export_subscriptions_page') }}">Export subscriptions OPML</a>
+      <form class="stack" method="post" enctype="multipart/form-data" action="{{ url_for('import_subscriptions_page') }}"><input type="file" name="opml" required accept=".opml,.xml"><button class="secondary" type="submit">Import subscriptions OPML</button></form>
+    </section>
+    <section class="panel stack">
+      <h3>Cookies</h3>
+      <form class="stack" method="post" enctype="multipart/form-data" action="{{ url_for('upload_cookies_page') }}"><input type="file" name="cookies" required accept=".txt"><button class="secondary" type="submit">Upload Netscape cookies.txt</button></form>
+      <p class="settings-help">The file is read by yt-dlp only when a download starts.</p>
+    </section>
+  </div>
+  <h3>Snapshots</h3>
+  <div class="download-list">{% for snapshot in snapshots %}<div class="download-row"><div><strong>{{ snapshot.name }}</strong><div class="download-meta"><span>{{ snapshot.size|filesize }}</span><span>{{ snapshot.created_at }}</span></div></div><a class="button small secondary" href="{{ url_for('download_snapshot_page', name=snapshot.name) }}">Download</a></div>{% else %}<div class="empty">No snapshots yet.</div>{% endfor %}</div>
 
   <h2>Ignored videos</h2>
   <p class="muted">Ignored videos are skipped when added directly or found inside a channel or playlist.</p>

@@ -10,11 +10,26 @@
     {% if video.channel_db_id %}<a href="{{ url_for('channel_page', channel_id=video.channel_db_id) }}">{{ video.channel or 'Unknown channel' }}</a>{% else %}{{ video.channel or 'Unknown channel' }}{% endif %}
     · {{ 'Watched' if video.watched else ((video.watch_progress|round|int|string) + '% watched' if video.watch_progress else 'Unwatched') }}
   </p>
+  {% if video.tags %}<p class="video-meta">Tags: {{ video.tags }}</p>{% endif %}
   <form class="card-actions" method="post" action="{{ url_for('watched_api', media_id=video.id) }}">
     <input type="hidden" name="watched" value="{{ 0 if video.watched else 1 }}">
     <input type="hidden" name="next" value="{{ request.path }}">
     <button class="small secondary" type="submit">Mark {{ 'unwatched' if video.watched else 'watched' }}</button>
   </form>
+  <form class="card-actions" method="post" action="{{ url_for('favorite_video_page', media_id=video.id) }}">
+    <input type="hidden" name="favorite" value="{{ 0 if video.favorite else 1 }}">
+    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+    <button class="small secondary{% if video.favorite %} favorite{% endif %}" type="submit">{{ '★ Favourited' if video.favorite else '☆ Favourite' }}</button>
+  </form>
+  {% if playlists %}
+    <form class="card-actions" method="post" action="{{ url_for('add_to_playlist_page', playlist_id=playlists[0].id, media_id=video.id) }}">
+      <input type="hidden" name="next" value="{{ request.path }}">
+      <select aria-label="Choose playlist" onchange="this.form.action='/playlists/'+this.value+'/videos/{{ video.id }}'">
+        {% for playlist in playlists %}<option value="{{ playlist.id }}">{{ playlist.name }}</option>{% endfor %}
+      </select>
+      <button class="small secondary" type="submit">Add</button>
+    </form>
+  {% endif %}
   <form class="card-actions" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
     <input type="hidden" name="next" value="{{ request.path }}">
     <button class="small danger" type="submit">Delete &amp; ignore</button>

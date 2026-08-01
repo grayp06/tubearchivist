@@ -2,6 +2,7 @@
 {% block title %}{{ video.title }} · TubeArchivist Lite{% endblock %}
 {% block content %}
   <div class="watch-layout">
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
     <video id="player" class="player" controls preload="metadata" playsinline {% if video.thumbnail_url %}poster="{{ video.thumbnail_url }}"{% endif %} aria-label="Play {{ video.title }}">
       <source src="{{ url_for('media_api', media_id=video.id) }}" type="video/{{ video.extension or 'mp4' }}">
     </video>
@@ -13,11 +14,17 @@
         {% if video.watch_progress and not video.watched %} · {{ video.watch_progress|round|int }}% watched{% endif %}
       </p>
       <p><code>{{ video.file_path }}</code></p>
+      <form class="filter-form" method="post" action="{{ url_for('tag_video_page', media_id=video.id) }}">
+        <input name="tags" value="{{ video.tags or '' }}" placeholder="tags, comma, separated" aria-label="Video tags">
+        <button class="secondary" type="submit">Save tags</button>
+      </form>
+      {% if playlists %}<form class="filter-form" method="post" action="{{ url_for('add_to_playlist_page', playlist_id=playlists[0].id, media_id=video.id) }}"><select onchange="this.form.action='/playlists/'+this.value+'/videos/{{ video.id }}'">{% for playlist in playlists %}<option value="{{ playlist.id }}">{{ playlist.name }}</option>{% endfor %}</select><input type="hidden" name="next" value="{{ request.path }}"><button class="secondary" type="submit">Add to playlist</button></form>{% endif %}
       <form method="post" action="{{ url_for('watched_api', media_id=video.id) }}">
         <input type="hidden" name="watched" value="{{ 0 if video.watched else 1 }}">
         <input type="hidden" name="next" value="{{ url_for('watch_page', media_id=video.id) }}">
         <button class="secondary" type="submit">Mark {{ 'unwatched' if video.watched else 'watched' }}</button>
       </form>
+      <form class="danger-action" method="post" action="{{ url_for('refresh_video_page', media_id=video.id) }}"><button class="secondary" type="submit">Refresh metadata</button></form>
       <form class="danger-action" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
         <input type="hidden" name="next" value="{{ url_for('home_page') }}">
         <button class="danger" type="submit">Delete &amp; ignore</button>

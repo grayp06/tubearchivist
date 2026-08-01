@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +17,27 @@ from app import (
     quality_format,
     validate_url,
     validate_settings,
+    validate_advanced_settings,
     video_identity,
+)
+from features import (
+    add_playlist_media,
+    add_subscription,
+    archive_stats,
+    create_playlist,
+    create_snapshot,
+    export_archive,
+    list_playlist_media,
+    list_playlists,
+    list_subscriptions,
+    prioritize_download,
+    queue_subscription_scan,
+    rescan_filesystem,
+    retry_download,
+    search_media,
+    set_media_favorite,
+    set_media_tags,
+    subscriptions_opml,
 )
 from library import (
     add_ignored,
@@ -453,10 +474,11 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "library.db"
             initialize_database(database_path)
-            self.assertEqual(
-                get_settings(database_path),
-                {"collection_limit": 100, "download_quality": "1080"},
-            )
+            defaults = get_settings(database_path)
+            self.assertEqual(defaults["collection_limit"], 100)
+            self.assertEqual(defaults["download_quality"], "1080")
+            self.assertEqual(defaults["page_size"], 24)
+            self.assertTrue(defaults["write_info_json"])
             update_settings(
                 database_path,
                 {"collection_limit": 250, "download_quality": "720"},
@@ -473,9 +495,197 @@ class SettingsTests(unittest.TestCase):
             validate_settings("100", "invalid")
         self.assertIn("height<=1080", quality_format("1080"))
         self.assertEqual(quality_format("best"), "bestvideo+bestaudio/best")
+        advanced = validate_advanced_settings(
+            {
+                "collection_limit": "50",
+                "download_quality": "720",
+                "page_size": "30",
+                "download_subtitles": "1",
+                "subtitle_languages": "en,fr",
+                "write_info_json": "1",
+                "sponsorblock_categories": "sponsor",
+                "rate_limit": "512",
+                "output_template": "%(title)s [%(id)s].%(ext)s",
+                "cookie_path": "/data/cookies.txt",
+            }
+        )
+        self.assertEqual(advanced["page_size"], 30)
+        self.assertEqual(advanced["download_subtitles"], 1)
+        self.assertEqual(advanced["rate_limit"], "512")
+
+
+class ArchiveFeatureTests(unittest.TestCase):
+    def _save_video(self, root: Path, database_path: Path, video_id: str, title: str) -> int:
+        path = root / f"{title} [{video_id}].mp4"
+        path.write_bytes(video_id.encode())
+        return save_media(
+            database_path,
+            f"https://youtu.be/{video_id}",
+            {
+                "id": video_id,
+                "extractor_key": "Youtube",
+                "title": title,
+                "description": f"Description for {title}",
+                "channel": "Feature Channel",
+                "channel_id": "feature-channel",
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+            },
+            path,
+        )
+
+    def test_subscriptions_queue_once_and_export_opml(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "library.db"
+            initialize_database(database_path)
+            add_subscription(
+                database_path,
+                "https://www.youtube.com/@feature/videos",
+                "channel",
+                "Feature channel",
+            )
+            self.assertEqual(queue_subscription_scan(database_path), 1)
+            self.assertEqual(queue_subscription_scan(database_path), 0)
+            self.assertEqual(len(list_subscriptions(database_path)), 1)
+            opml = subscriptions_opml(database_path)
+            self.assertIn(b"Feature channel", opml)
+            self.assertIn(b"youtube.com/@feature", opml)
+
+    def test_custom_playlists_search_favorites_and_tags(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            initialize_database(database_path)
+            first = self._save_video(root, database_path, "one", "Alpha archive")
+            self._save_video(root, database_path, "two", "Beta archive")
+            playlist = create_playlist(database_path, "My picks", "Local list")
+            self.assertTrue(add_playlist_media(database_path, playlist["id"], first))
+            self.assertEqual(len(list_playlist_media(database_path, playlist["id"])), 1)
+            self.assertEqual(list_playlists(database_path)[0]["video_count"], 1)
+            self.assertTrue(set_media_favorite(database_path, first, True))
+            self.assertTrue(set_media_tags(database_path, first, "science, favourite"))
+            result = search_media(database_path, query="science", favorite=True)
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["items"][0]["title"], "Alpha archive")
+            self.assertIn("science", result["items"][0]["tags"])
+
+    def test_priority_retry_stats_snapshot_export_and_rescan(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            downloads = root / "downloads"
+            snapshots = root / "snapshots"
+            downloads.mkdir()
+            initialize_database(database_path)
+            first = enqueue_download(database_path, "https://youtu.be/first", kind="video")
+            second = enqueue_download(database_path, "https://youtu.be/second", kind="video")
+            self.assertTrue(prioritize_download(database_path, second["id"]))
+            self.assertEqual(claim_next_download(database_path)["id"], second["id"])
+            self.assertTrue(cancel_download(database_path, second["id"]))
+            self.assertTrue(retry_download(database_path, second["id"]))
+            orphan = downloads / "Recovered [orphan-id].mp4"
+            orphan.write_bytes(b"orphan")
+            scan = rescan_filesystem(database_path, downloads)
+            self.assertEqual(scan["added"], 1)
+            self.assertEqual(archive_stats(database_path)["videos"], 1)
+            snapshot = create_snapshot(database_path, snapshots)
+            self.assertTrue(snapshot.is_file())
+            exported = export_archive(database_path)
+            self.assertEqual(exported["version"], 1)
+            self.assertEqual(len(exported["media"]), 1)
 
 
 class FlaskEndpointTests(unittest.TestCase):
+    def test_archive_feature_pages_and_actions_are_server_rendered(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            download_dir = root / "downloads"
+            snapshot_dir = root / "snapshots"
+            download_dir.mkdir()
+            initialize_database(database_path)
+            file_path = download_dir / "Feature [feature-id].mp4"
+            file_path.write_bytes(b"feature")
+            media_id = save_media(
+                database_path,
+                "https://youtu.be/feature-id",
+                {
+                    "id": "feature-id",
+                    "extractor_key": "Youtube",
+                    "title": "Searchable feature video",
+                    "channel": "Feature channel",
+                    "channel_id": "feature-channel",
+                },
+                file_path,
+            )
+            with (
+                patch("app.DATABASE_PATH", database_path),
+                patch("app.DOWNLOAD_DIR", download_dir),
+                patch("app.SNAPSHOT_DIR", snapshot_dir),
+            ):
+                client = APP.test_client()
+                self.assertEqual(
+                    client.post(
+                        "/subscriptions",
+                        data={"url": "https://www.youtube.com/@feature", "name": "Feature"},
+                    ).status_code,
+                    303,
+                )
+                self.assertEqual(
+                    client.post(
+                        "/playlists",
+                        data={"name": "Watch later", "description": "Test"},
+                    ).status_code,
+                    303,
+                )
+                playlist_id = list_playlists(database_path)[0]["id"]
+                self.assertEqual(
+                    client.post(f"/playlists/{playlist_id}/videos/{media_id}").status_code,
+                    303,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/videos/{media_id}/tags", data={"tags": "search-tag"}
+                    ).status_code,
+                    303,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/videos/{media_id}/favorite",
+                        data={"favorite": "1", "next": "/"},
+                    ).status_code,
+                    303,
+                )
+                for path, expected in (
+                    ("/search?q=search-tag", b"Searchable feature video"),
+                    ("/playlists", b"Watch later"),
+                    (f"/playlists/{playlist_id}", b"Searchable feature video"),
+                    ("/stats", b"Archive statistics"),
+                    ("/settings", b"SponsorBlock"),
+                ):
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn(expected, response.data)
+                    self.assertNotIn(b"setInterval", response.data)
+                self.assertEqual(client.post("/settings/snapshots").status_code, 303)
+                self.assertEqual(len(list(snapshot_dir.glob("*.db"))), 1)
+                exported = client.get("/settings/export.json")
+                self.assertEqual(exported.status_code, 200)
+                self.assertIn(b"Searchable feature video", exported.data)
+                imported = client.post(
+                    "/settings/subscriptions.opml",
+                    data={
+                        "opml": (
+                            io.BytesIO(
+                                b'<opml version="2.0"><body><outline text="Imported" type="channel" xmlUrl="https://www.youtube.com/@imported"/></body></opml>'
+                            ),
+                            "subscriptions.opml",
+                        )
+                    },
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(imported.status_code, 303)
+                self.assertEqual(len(list_subscriptions(database_path)), 2)
+
     def test_queue_cancel_ignore_and_delete_ignore_routes(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -510,6 +720,8 @@ class FlaskEndpointTests(unittest.TestCase):
 
                 file_path = download_dir / "delete.mp4"
                 file_path.write_bytes(b"video")
+                sidecar_path = download_dir / "delete.info.json"
+                sidecar_path.write_text("{}", encoding="utf-8")
                 media_id = save_media(
                     database_path,
                     "https://youtu.be/delete-route",
@@ -526,6 +738,7 @@ class FlaskEndpointTests(unittest.TestCase):
                 )
                 self.assertEqual(deleted_response.status_code, 303)
                 self.assertFalse(file_path.exists())
+                self.assertFalse(sidecar_path.exists())
                 self.assertIsNone(get_media(database_path, media_id))
 
     def test_pages_are_server_rendered_without_polling(self):
@@ -558,10 +771,9 @@ class FlaskEndpointTests(unittest.TestCase):
                     data={"collection_limit": "75", "download_quality": "1440"},
                 )
                 self.assertEqual(response.status_code, 303)
-                self.assertEqual(
-                    get_settings(database_path),
-                    {"collection_limit": 75, "download_quality": "1440"},
-                )
+                saved = get_settings(database_path)
+                self.assertEqual(saved["collection_limit"], 75)
+                self.assertEqual(saved["download_quality"], "1440")
                 invalid = client.post(
                     "/settings",
                     data={"collection_limit": "10001", "download_quality": "1080"},

@@ -12,10 +12,13 @@
   <form class="download-form" method="post" action="{{ url_for('add_download_page') }}">
     <label for="url" hidden>Video, playlist, or channel URL</label>
     <input id="url" name="url" type="url" required autofocus placeholder="YouTube video, playlist, or channel URL">
+    <label class="inline-form"><input name="subscribe" type="checkbox" value="1"> Subscribe if channel/playlist</label>
     <button type="submit">Add to queue</button>
   </form>
   {% if queued_id %}<p class="notice" role="status">Download #{{ queued_id }} was added to the queue. Refresh this page to update its status.</p>{% endif %}
+  {% if scanned is not none %}<p class="notice" role="status">Subscription scan queued {{ scanned }} collection{{ '' if scanned == 1 else 's' }}.</p>{% endif %}
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form class="filter-form" method="get"><input type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search queue and history"><button class="secondary" type="submit">Search queue</button></form>
 
   <h2>Active</h2>
   <section class="download-list" aria-label="Active downloads">
@@ -30,6 +33,7 @@
           {% if item.kind == 'video' %}
             <form method="post" action="{{ url_for('cancel_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Cancel</button></form>
             <form method="post" action="{{ url_for('ignore_download_page', download_id=item.id) }}"><button class="small danger" type="submit">Ignore</button></form>
+            <form method="post" action="{{ url_for('prioritize_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Prioritize</button></form>
           {% endif %}
         </div>
         <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
@@ -40,6 +44,7 @@
   </section>
 
   <h2>Queued</h2>
+  {% if queued %}<form style="margin-bottom:12px" method="post" action="{{ url_for('cancel_all_downloads_page') }}"><button class="small secondary" type="submit">Cancel all queued videos</button></form>{% endif %}
   <section class="download-list" aria-label="Queued downloads">
     {% for item in queued %}
       <article class="download-row">
@@ -58,6 +63,7 @@
   </section>
 
   <h2>History</h2>
+  {% if history %}<form style="margin-bottom:12px" method="post" action="{{ url_for('clear_download_history_page') }}"><button class="small secondary" type="submit">Clear history</button></form>{% endif %}
   <section class="download-list" aria-label="Download history">
     {% for item in history %}
       <article class="download-row">
@@ -66,6 +72,7 @@
           <div class="download-meta"><span class="source-kind">{{ item.kind }}</span>{% if item.item_count is not none %}<span>{{ item.item_count }} new videos</span>{% endif %}{% if item.filename %}<span>{{ item.filename }}</span>{% endif %}<span>{{ item.finished_at or item.updated_at }}</span>{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}{% if item.error %}<span>{{ item.error }}</span>{% endif %}</div>
         </div>
         <span class="status {{ item.status }}">{{ item.status }}</span>
+        {% if item.status in ('error', 'cancelled') %}<form method="post" action="{{ url_for('retry_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Retry</button></form>{% endif %}
       </article>
     {% else %}
       <div class="empty">No completed, cancelled, or failed downloads yet.</div>

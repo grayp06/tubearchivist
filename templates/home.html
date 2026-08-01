@@ -9,6 +9,23 @@
     <a class="button" href="{{ url_for('downloads_page') }}">Add a download</a>
   </div>
 
+  <form class="filter-form" method="get">
+    <input type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search title, channel, description, subtitles, or tags" aria-label="Search library">
+    <select name="watched" aria-label="Watched state">
+      <option value="all">All watched states</option>
+      <option value="unwatched" {% if request.args.get('watched') == 'unwatched' %}selected{% endif %}>Unwatched</option>
+      <option value="watched" {% if request.args.get('watched') == 'watched' %}selected{% endif %}>Watched</option>
+    </select>
+    <select name="type" aria-label="Video type">
+      {% for value, label in [('all','All types'),('video','Videos'),('short','Shorts'),('stream','Streams')] %}<option value="{{ value }}" {% if request.args.get('type') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="sort" aria-label="Sort videos">
+      {% for value, label in [('downloaded','Downloaded'),('published','Published'),('title','Title'),('duration','Duration'),('size','File size')] %}<option value="{{ value }}" {% if request.args.get('sort', 'downloaded') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label class="inline-form"><input type="checkbox" name="favorite" value="1" {% if request.args.get('favorite') == '1' %}checked{% endif %}> Favourites</label>
+    <button type="submit">Apply</button>
+  </form>
+
   {% if videos %}
     <section class="video-grid" aria-label="Recently downloaded videos">
       {% for video in videos %}
@@ -17,5 +34,12 @@
     </section>
   {% else %}
     <div class="empty">No downloaded videos yet. Add your first URL from Downloads.</div>
+  {% endif %}
+  {% if result.pages > 1 %}
+    <nav class="pagination" aria-label="Library pages">
+      {% if result.page > 1 %}<a class="button secondary" href="?{{ request.args|urlencode }}&page={{ result.page - 1 }}">Previous</a>{% endif %}
+      <span>Page {{ result.page }} of {{ result.pages }} · {{ result.total }} videos</span>
+      {% if result.page < result.pages %}<a class="button secondary" href="?{{ request.args|urlencode }}&page={{ result.page + 1 }}">Next</a>{% endif %}
+    </nav>
   {% endif %}
 {% endblock %}

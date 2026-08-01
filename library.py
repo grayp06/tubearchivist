@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     filename TEXT,
     file_path TEXT,
     media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    playlist_db_id INTEGER REFERENCES playlists(id),
     error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TEXT,
@@ -102,6 +104,15 @@ CREATE TABLE IF NOT EXISTS ignored_videos (
 DEFAULT_SETTINGS = {
     "collection_limit": "100",
     "download_quality": "1080",
+    "page_size": "24",
+    "download_subtitles": "0",
+    "subtitle_languages": "en",
+    "write_info_json": "1",
+    "sponsorblock_categories": "",
+    "cookie_path": "/data/cookies.txt",
+    "rate_limit": "",
+    "output_template": "%(title).180B [%(id)s].%(ext)s",
+    "download_comments": "0",
 }
 
 
@@ -230,6 +241,32 @@ def initialize_database(database_path: Path) -> None:
             """
         )
 
+    from features import initialize_features
+
+    initialize_features(database_path)
+
+
+def _subtitle_text(file_path: Path) -> str | None:
+    """Read bounded WebVTT sidecars into SQLite's searchable metadata."""
+    fragments: list[str] = []
+    for subtitle in file_path.parent.glob(f"{file_path.stem}*.vtt"):
+        try:
+            if subtitle.stat().st_size > 5 * 1024 * 1024:
+                continue
+            text = subtitle.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            cleaned = line.strip()
+            if not cleaned or cleaned == "WEBVTT" or "-->" in cleaned or cleaned.isdigit():
+                continue
+            cleaned = __import__("re").sub(r"<[^>]+>", "", cleaned)
+            if cleaned:
+                fragments.append(cleaned)
+    if not fragments:
+        return None
+    return "\n".join(dict.fromkeys(fragments))[:1_000_000]
+
 
 def save_media(
     database_path: Path,
@@ -306,18 +343,27 @@ def save_media(
             "file_size": resolved_file.stat().st_size,
             "extension": resolved_file.suffix.lstrip(".") or info.get("ext"),
             "metadata_json": metadata_json,
+            "video_type": (
+                "stream"
+                if info.get("live_status") in {"is_live", "was_live", "post_live"}
+                else "short"
+                if "/shorts/" in str(info.get("webpage_url") or source_url)
+                else "video"
+            ),
+            "subtitle_text": _subtitle_text(resolved_file),
         }
         cursor = connection.execute(
             """
             INSERT INTO media (
                 extractor, video_id, source_url, webpage_url, title, channel,
                 channel_id, channel_db_id, duration, upload_date, description,
-                thumbnail_url, file_path, file_size, extension, metadata_json
+                thumbnail_url, file_path, file_size, extension, metadata_json,
+                video_type, subtitle_text
             ) VALUES (
                 :extractor, :video_id, :source_url, :webpage_url, :title,
                 :channel, :channel_id, :channel_db_id, :duration, :upload_date,
                 :description, :thumbnail_url, :file_path, :file_size,
-                :extension, :metadata_json
+                :extension, :metadata_json, :video_type, :subtitle_text
             )
             ON CONFLICT(extractor, video_id) DO UPDATE SET
                 source_url=excluded.source_url,
@@ -334,6 +380,8 @@ def save_media(
                 file_size=excluded.file_size,
                 extension=excluded.extension,
                 metadata_json=excluded.metadata_json,
+                video_type=excluded.video_type,
+                subtitle_text=COALESCE(excluded.subtitle_text, media.subtitle_text),
                 updated_at=CURRENT_TIMESTAMP
             """,
             values,
@@ -357,6 +405,27 @@ def get_settings(database_path: Path) -> dict:
         "download_quality": values.get(
             "download_quality", DEFAULT_SETTINGS["download_quality"]
         ),
+        "page_size": int(values.get("page_size", DEFAULT_SETTINGS["page_size"])),
+        "download_subtitles": values.get(
+            "download_subtitles", DEFAULT_SETTINGS["download_subtitles"]
+        ) == "1",
+        "subtitle_languages": values.get(
+            "subtitle_languages", DEFAULT_SETTINGS["subtitle_languages"]
+        ),
+        "write_info_json": values.get(
+            "write_info_json", DEFAULT_SETTINGS["write_info_json"]
+        ) == "1",
+        "sponsorblock_categories": values.get(
+            "sponsorblock_categories", DEFAULT_SETTINGS["sponsorblock_categories"]
+        ),
+        "cookie_path": values.get("cookie_path", DEFAULT_SETTINGS["cookie_path"]),
+        "rate_limit": values.get("rate_limit", DEFAULT_SETTINGS["rate_limit"]),
+        "output_template": values.get(
+            "output_template", DEFAULT_SETTINGS["output_template"]
+        ),
+        "download_comments": values.get(
+            "download_comments", DEFAULT_SETTINGS["download_comments"]
+        ) == "1",
     }
 
 
@@ -415,10 +484,13 @@ def get_media(database_path: Path, media_id: int) -> dict | None:
         row = connection.execute(
             """
             SELECT m.*, c.thumbnail_url AS channel_thumbnail_url,
-                   c.source_url AS channel_source_url
+                   c.source_url AS channel_source_url,
+                   GROUP_CONCAT(mt.tag, ', ') AS tags
             FROM media AS m
             LEFT JOIN channels AS c ON c.id = m.channel_db_id
+            LEFT JOIN media_tags AS mt ON mt.media_id=m.id
             WHERE m.id=?
+            GROUP BY m.id
             """,
             (media_id,),
         ).fetchone()
@@ -627,6 +699,21 @@ def get_channel(database_path: Path, channel_id: int) -> dict | None:
     return dict(row) if row is not None else None
 
 
+def delete_empty_channel(database_path: Path, channel_id: int) -> bool:
+    """Delete a channel only after all of its media rows have been removed."""
+    with connect(database_path) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM channels
+            WHERE id=? AND NOT EXISTS (
+                SELECT 1 FROM media WHERE channel_db_id=channels.id
+            )
+            """,
+            (channel_id,),
+        )
+    return cursor.rowcount == 1
+
+
 def list_channel_media(database_path: Path, channel_id: int) -> list[dict]:
     """Return newest videos belonging to one normalized channel."""
     with connect(database_path) as connection:
@@ -735,13 +822,30 @@ def enqueue_collection_items(
                 continue
             archived = connection.execute(
                 """
-                SELECT 1 FROM media
+                SELECT id FROM media
                 WHERE source_url=? OR webpage_url=?
                 LIMIT 1
                 """,
                 (source_url, source_url),
             ).fetchone()
             if archived is not None:
+                playlist = connection.execute(
+                    "SELECT playlist_db_id FROM downloads WHERE id=?",
+                    (parent_id,),
+                ).fetchone()
+                if playlist is not None and playlist["playlist_db_id"] is not None:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO playlist_media (
+                            playlist_id, media_id, position
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (
+                            playlist["playlist_db_id"],
+                            archived["id"],
+                            item.get("source_position") or 0,
+                        ),
+                    )
                 continue
             already_pending = connection.execute(
                 """
@@ -790,7 +894,7 @@ def claim_next_download(database_path: Path) -> dict | None:
         if active is not None:
             return None
         row = connection.execute(
-            "SELECT * FROM downloads WHERE status='queued' ORDER BY id LIMIT 1"
+            "SELECT * FROM downloads WHERE status='queued' ORDER BY priority DESC, id LIMIT 1"
         ).fetchone()
         if row is None:
             return None
@@ -858,6 +962,8 @@ DOWNLOAD_UPDATE_FIELDS = {
     "parent_id",
     "source_position",
     "item_count",
+    "priority",
+    "playlist_db_id",
     "error",
     "finished_at",
 }
@@ -893,6 +999,7 @@ def list_downloads(database_path: Path, limit: int = 100) -> list[dict]:
                 WHEN 'queued' THEN 1
                 ELSE 2
             END,
+            CASE WHEN d.status='queued' THEN d.priority END DESC,
             CASE WHEN d.status IN ('queued', 'downloading') THEN d.id END ASC,
             CASE WHEN d.status IN ('complete', 'error', 'cancelled') THEN d.id END DESC
             LIMIT ?

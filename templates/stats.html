@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Statistics · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading"><div><h1>Archive statistics</h1><div class="muted">Calculated directly from SQLite when this page is opened.</div></div><a class="button secondary" href="{{ url_for('stats_page') }}">Refresh</a></div>
+  <section class="stat-grid">
+    <div class="stat"><strong>{{ stats.videos }}</strong><span>Videos</span></div>
+    <div class="stat"><strong>{{ stats.channels }}</strong><span>Channels</span></div>
+    <div class="stat"><strong>{{ stats.playlists }}</strong><span>Playlists</span></div>
+    <div class="stat"><strong>{{ stats.subscriptions }}</strong><span>Subscriptions</span></div>
+    <div class="stat"><strong>{{ stats.watched }}</strong><span>Watched</span></div>
+    <div class="stat"><strong>{{ stats.favorites }}</strong><span>Favourites</span></div>
+    <div class="stat"><strong>{{ stats.bytes|filesize }}</strong><span>Media size</span></div>
+    <div class="stat"><strong>{{ stats.duration|duration }}</strong><span>Runtime</span></div>
+  </section>
+  <h2>Queue</h2><div class="panel">{% for status, count in stats.queue.items() %}<span class="status {{ status }}">{{ status }} {{ count }}</span> {% else %}<span class="muted">No queue history.</span>{% endfor %}</div>
+  <h2>Largest channels</h2><div class="panel"><table><thead><tr><th>Channel</th><th>Videos</th><th>Size</th></tr></thead><tbody>{% for channel in stats.biggest_channels %}<tr><td><a href="{{ url_for('channel_page', channel_id=channel.id) }}">{{ channel.name }}</a></td><td>{{ channel.videos }}</td><td>{{ channel.bytes|filesize }}</td></tr>{% else %}<tr><td colspan="3">No archived channels.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

@@ -1,12 +1,28 @@
 # TubeArchivist Lite
 
-The deliberately small Flask version. It has a recent-download home page,
-normalized channels, a durable FIFO download queue, watched status, and local
-video playback. SQLite stores media metadata, channel records, playback
-percentage, and every queue state transition. Channel cards open filtered video
-pages. Playback below 5% is stored as 0%, partial videos resume, and reaching
-95% marks a video watched. There is still no authentication, search,
-subscription scheduler, or playlist editing.
+The deliberately small Flask version. It provides the core TubeArchivist
+archive workflows with one Flask process, one sleeping worker thread, SQLite,
+and local files. There is no Redis, Celery, Elasticsearch, SPA runtime, or
+front-end status polling.
+
+The archive includes:
+
+- recent videos with watched progress, favourites, tags, filters, sorting, and pagination;
+- normalized channel pages plus channel and playlist subscriptions;
+- manual subscription rescans that expand into the durable priority queue;
+- imported YouTube playlists and editable local playlists;
+- metadata, description, tag, ID, channel, and downloaded-subtitle search;
+- local playback, event-driven progress saving, and 95% watched detection;
+- individual/bulk cancellation, priority, retry, ignore, and delete-and-ignore;
+- 480p through 4K/best quality controls, rate limiting, subtitles, info JSON,
+  cookies, optional comments, and SponsorBlock removal;
+- archive statistics, download-folder reconciliation, SQLite snapshots, JSON
+  export, and OPML subscription import/export.
+
+Authentication, multiple users, notifications, and automatic schedules are
+intentionally omitted. This localhost-oriented edition keeps those out to
+preserve the requested simplicity and memory profile; subscription scans and
+maintenance are explicit manual actions.
 
 The Downloads form accepts individual YouTube videos, playlists, and channels.
 Playlist and channel URLs are expanded into grouped SQLite video rows; archived
@@ -30,7 +46,8 @@ docker compose up -d --build
 ```
 
 Open <http://localhost:8088>. Downloaded files are written to `./downloads` and
-the SQLite database is stored at `./data/library.db`. Saved videos appear in
+the SQLite database is stored at `./data/library.db`. SQLite snapshots are
+stored under `./data/snapshots`. Saved videos appear in
 the Home page and can be played with seeking. Queue status never polls: use the
 Refresh status link on the Downloads page when you want an update.
 

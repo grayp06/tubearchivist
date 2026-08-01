@@ -7,6 +7,31 @@
       <div class="muted">Channels are created automatically from downloaded video metadata.</div>
     </div>
   </div>
+  <div class="split">
+    <section class="panel">
+      <h2 style="margin-top:0">Subscriptions</h2>
+      <form class="stack" method="post" action="{{ url_for('add_subscription_page') }}">
+        <input name="url" type="url" required placeholder="YouTube channel or playlist URL">
+        <input name="name" type="text" placeholder="Optional display name">
+        <button type="submit">Add subscription</button>
+      </form>
+      <form style="margin-top:12px" method="post" action="{{ url_for('scan_subscriptions_page') }}"><button class="secondary" type="submit">Rescan enabled subscriptions</button></form>
+    </section>
+    <section class="panel">
+      <h2 style="margin-top:0">Managed subscriptions</h2>
+      <div class="stack">
+        {% for item in subscriptions %}
+          <div><strong>{{ item.name or item.source_url }}</strong><div class="download-meta"><span>{{ item.kind }}</span><span>{{ 'Enabled' if item.enabled else 'Paused' }}</span>{% if item.last_scanned_at %}<span>Scanned {{ item.last_scanned_at }}</span>{% endif %}</div>
+            <div class="queue-actions" style="justify-content:flex-start;margin-top:8px">
+              <form method="post" action="{{ url_for('toggle_subscription_page', subscription_id=item.id) }}"><input type="hidden" name="enabled" value="{{ 0 if item.enabled else 1 }}"><button class="small secondary" type="submit">{{ 'Pause' if item.enabled else 'Enable' }}</button></form>
+              <form method="post" action="{{ url_for('delete_subscription_page', subscription_id=item.id) }}"><button class="small danger" type="submit">Remove</button></form>
+            </div>
+          </div>
+        {% else %}<div class="muted">No subscriptions yet.</div>{% endfor %}
+      </div>
+    </section>
+  </div>
+  <h2>Archived channels</h2>
   {% if channels %}
     <section class="channel-grid" aria-label="Archived channels">
       {% for channel in channels %}

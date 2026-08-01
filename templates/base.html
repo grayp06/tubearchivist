@@ -52,8 +52,22 @@
     .settings-form { display: grid; gap: 24px; max-width: 680px; }
     .settings-field { display: grid; gap: 7px; }
     .settings-field label { font-weight: 750; }
-    .settings-field input, .settings-field select { width: 100%; border: 1px solid #3b4960; border-radius: 8px; padding: 11px 12px; background: #0b1120; color: #fff; font: inherit; }
+    .settings-field input:not([type=checkbox]), .settings-field select { width: 100%; border: 1px solid #3b4960; border-radius: 8px; padding: 11px 12px; background: #0b1120; color: #fff; font: inherit; }
+    .settings-field input[type=checkbox] { width: auto; margin: 0 8px 0 0; }
     .settings-help { margin: 0; color: #9ca3af; font-size: .86rem; line-height: 1.5; }
+    .filter-form { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 26px; padding: 14px; border: 1px solid #2b374b; background: #151e2e; border-radius: 10px; }
+    .filter-form input, .filter-form select, textarea { min-width: 140px; border: 1px solid #3b4960; border-radius: 8px; padding: 9px 11px; background: #0b1120; color: #fff; font: inherit; }
+    .filter-form input[type=search] { flex: 1; min-width: 220px; }
+    .inline-form { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+    .stack { display: grid; gap: 12px; }
+    .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin: 28px 0; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+    .stat { padding: 18px; border: 1px solid #2b374b; background: #151e2e; border-radius: 10px; }
+    .stat strong { display: block; font-size: 1.55rem; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #2b374b; }
+    .favorite { color: #fbbf24; }
     .notice, .error { margin: 14px 0; padding: 12px 14px; border-radius: 8px; }
     .notice { background: #12372d; color: #a7f3d0; }
     .error { background: #451a1a; color: #fecaca; }
@@ -90,7 +104,10 @@
       <nav aria-label="Primary navigation">
         <a href="{{ url_for('home_page') }}" {% if request.endpoint == 'home_page' %}class="active" aria-current="page"{% endif %}>Home</a>
         <a href="{{ url_for('channels_page') }}" {% if request.endpoint == 'channels_page' %}class="active" aria-current="page"{% endif %}>Channels</a>
+        <a href="{{ url_for('playlists_page') }}" {% if request.endpoint in ('playlists_page', 'playlist_page') %}class="active" aria-current="page"{% endif %}>Playlists</a>
         <a href="{{ url_for('downloads_page') }}" {% if request.endpoint in ('downloads_page', 'add_download_page') %}class="active" aria-current="page"{% endif %}>Downloads</a>
+        <a href="{{ url_for('search_page') }}" {% if request.endpoint == 'search_page' %}class="active" aria-current="page"{% endif %}>Search</a>
+        <a href="{{ url_for('stats_page') }}" {% if request.endpoint == 'stats_page' %}class="active" aria-current="page"{% endif %}>Stats</a>
         <a href="{{ url_for('settings_page') }}" {% if request.endpoint in ('settings_page', 'update_settings_page') %}class="active" aria-current="page"{% endif %}>Settings</a>
       </nav>
     </div>
