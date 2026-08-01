@@ -14,7 +14,7 @@ Functionality shared between apps.
 
 Defines views on the root `/api/*` path. Has base views to inherit from.
 
-- Connections to ES and Redis
+- SQLite document storage, state, and worker queues
 - Searching
 - URL parser
 - Collection of helper functions

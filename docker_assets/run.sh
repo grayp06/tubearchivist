@@ -34,7 +34,7 @@ python manage.py ta_startup
 nginx &
 celery -A task.celery worker \
     --loglevel=$LOGLEVEL \
-    --concurrency 4 \
+    --concurrency 1 \
     --max-tasks-per-child 5 \
     --max-memory-per-child 150000 &
 
