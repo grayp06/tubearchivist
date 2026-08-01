@@ -43,8 +43,19 @@ Once your YouTube video collection grows, it becomes hard to search and find a s
 
 ## Installing
 
-For minimal system requirements, the Tube Archivist stack needs around 2GB of available memory for a small testing setup and around 4GB of available memory for a mid to large sized installation. Minimal with dual core with 4 threads, better quad core plus.
+The default compose file is optimized for small, personal archives: it uses a
+512 MB Elasticsearch heap and one web and task worker. This trades concurrent
+requests and indexing speed for a substantially smaller memory footprint and
+uses persistent Redis storage. Allow at least 1 GB of available memory for a
+small installation; large libraries and concurrent users may still need more.
+The minimum CPU is dual core, with quad core recommended.
 This project requires docker. Ensure it is installed and running on your system.
+
+Forks automatically build and publish multi-platform images to GitHub Container
+Registry after a push to `master`, a `v*` tag, or a manual workflow run. The
+resulting image is available as `ghcr.io/<github-user>/<repository>:latest` and
+can replace `bbilly1/tubearchivist` in the compose file. Pull requests build the
+image without publishing it, so container changes are still validated safely.
 
 The documentation has additional user provided instructions for [Unraid](https://docs.tubearchivist.com/installation/unraid/), [Synology](https://docs.tubearchivist.com/installation/synology/) and [Podman](https://docs.tubearchivist.com/installation/podman/).
 
@@ -68,6 +79,8 @@ Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow 
 | TZ                            | Set your timezone for the scheduler | Required |
 | TA_PORT                       | Overwrite Nginx port | Optional |
 | TA_BACKEND_PORT               | Overwrite container internal backend server port | Optional |
+| TA_WEB_WORKERS                | Web server processes; defaults to 1 (more uses more memory) | Optional |
+| TA_TASK_WORKERS               | Concurrent background jobs; defaults to 1 (more uses more memory) | Optional |
 | TA_ENABLE_AUTH_PROXY          | Enables support for forwarding auth in reverse proxies | [Read more](https://docs.tubearchivist.com/configuration/forward-auth/) |
 | TA_AUTH_PROXY_USERNAME_HEADER | Header containing username to log in | Optional |
 | TA_AUTH_PROXY_LOGOUT_URL      | Logout URL for forwarded auth | Optional |
