@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Channels · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div>
+      <h1>Channels</h1>
+      <div class="muted">Channels are created automatically from downloaded video metadata.</div>
+    </div>
+  </div>
+  {% if channels %}
+    <section class="channel-grid" aria-label="Archived channels">
+      {% for channel in channels %}
+        <a class="channel-card" href="{{ url_for('channel_page', channel_id=channel.id) }}" aria-label="View {{ channel.name }} videos">
+          {% if channel.thumbnail_url %}
+            <img class="channel-avatar" src="{{ channel.thumbnail_url }}" alt="{{ channel.name }} channel thumbnail" loading="lazy" referrerpolicy="no-referrer">
+          {% else %}
+            <div class="channel-avatar" aria-label="No channel thumbnail">{{ channel.name[:1]|upper }}</div>
+          {% endif %}
+          <div>
+            <h2>{{ channel.name }}</h2>
+            <p>{{ channel.video_count }} video{{ '' if channel.video_count == 1 else 's' }}</p>
+            <p>{{ channel.watched_count }} watched</p>
+          </div>
+        </a>
+      {% endfor %}
+    </section>
+  {% else %}
+    <div class="empty">Channels will appear after the first successful download.</div>
+  {% endif %}
+{% endblock %}

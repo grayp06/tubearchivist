@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ channel.name }} · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div style="display:flex;align-items:center;gap:18px">
+      {% if channel.thumbnail_url %}
+        <img class="channel-avatar" src="{{ channel.thumbnail_url }}" alt="{{ channel.name }} channel thumbnail" referrerpolicy="no-referrer">
+      {% else %}
+        <div class="channel-avatar">{{ channel.name[:1]|upper }}</div>
+      {% endif %}
+      <div><h1>{{ channel.name }}</h1><div class="muted">{{ channel.video_count }} archived video{{ '' if channel.video_count == 1 else 's' }} · {{ channel.watched_count }} watched</div></div>
+    </div>
+    <a class="button secondary" href="{{ url_for('channels_page') }}">All channels</a>
+  </div>
+  {% if videos %}
+    <section class="video-grid" aria-label="{{ channel.name }} videos">
+      {% for video in videos %}{% include "_video_card.html" %}{% endfor %}
+    </section>
+  {% else %}
+    <div class="empty">No downloaded videos are linked to this channel.</div>
+  {% endif %}
+{% endblock %}

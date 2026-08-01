@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Downloads · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div>
+      <h1>Downloads</h1>
+      <div class="muted">Add a video, playlist, or channel. Collections expand into individual SQLite queue rows.</div>
+    </div>
+    <a class="button secondary" href="{{ url_for('downloads_page') }}">Refresh status</a>
+  </div>
+
+  <form class="download-form" method="post" action="{{ url_for('add_download_page') }}">
+    <label for="url" hidden>Video, playlist, or channel URL</label>
+    <input id="url" name="url" type="url" required autofocus placeholder="YouTube video, playlist, or channel URL">
+    <button type="submit">Add to queue</button>
+  </form>
+  {% if queued_id %}<p class="notice" role="status">Download #{{ queued_id }} was added to the queue. Refresh this page to update its status.</p>{% endif %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+  <h2>Active</h2>
+  <section class="download-list" aria-label="Active downloads">
+    {% for item in active %}
+      <article class="download-row">
+        <div>
+          <strong>{{ item.title or item.source_url }}</strong>
+          <div class="download-meta"><span class="source-kind">{{ item.kind }}</span><span>{{ item.percent or (item.progress|string + '%') }}</span>{% if item.speed %}<span>{{ item.speed }}</span>{% endif %}{% if item.eta %}<span>ETA {{ item.eta }}</span>{% endif %}{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}</div>
+        </div>
+        <div class="queue-actions">
+          <span class="status downloading">Downloading</span>
+          {% if item.kind == 'video' %}
+            <form method="post" action="{{ url_for('cancel_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Cancel</button></form>
+            <form method="post" action="{{ url_for('ignore_download_page', download_id=item.id) }}"><button class="small danger" type="submit">Ignore</button></form>
+          {% endif %}
+        </div>
+        <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
+      </article>
+    {% else %}
+      <div class="empty">Nothing is downloading right now.</div>
+    {% endfor %}
+  </section>
+
+  <h2>Queued</h2>
+  <section class="download-list" aria-label="Queued downloads">
+    {% for item in queued %}
+      <article class="download-row">
+        <div><strong>{{ item.title or item.source_url }}</strong><div class="download-meta"><span class="source-kind">{{ item.kind }}</span><span>Position {{ item.queue_position }}</span><span>Added {{ item.created_at }}</span>{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}</div></div>
+        <div class="queue-actions">
+          <span class="status queued">Queued</span>
+          {% if item.kind == 'video' %}
+            <form method="post" action="{{ url_for('cancel_download_page', download_id=item.id) }}"><button class="small secondary" type="submit">Cancel</button></form>
+            <form method="post" action="{{ url_for('ignore_download_page', download_id=item.id) }}"><button class="small danger" type="submit">Ignore</button></form>
+          {% endif %}
+        </div>
+      </article>
+    {% else %}
+      <div class="empty">The queue is empty.</div>
+    {% endfor %}
+  </section>
+
+  <h2>History</h2>
+  <section class="download-list" aria-label="Download history">
+    {% for item in history %}
+      <article class="download-row">
+        <div>
+          <strong>{{ item.title or item.source_url }}</strong>
+          <div class="download-meta"><span class="source-kind">{{ item.kind }}</span>{% if item.item_count is not none %}<span>{{ item.item_count }} new videos</span>{% endif %}{% if item.filename %}<span>{{ item.filename }}</span>{% endif %}<span>{{ item.finished_at or item.updated_at }}</span>{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}{% if item.error %}<span>{{ item.error }}</span>{% endif %}</div>
+        </div>
+        <span class="status {{ item.status }}">{{ item.status }}</span>
+      </article>
+    {% else %}
+      <div class="empty">No completed, cancelled, or failed downloads yet.</div>
+    {% endfor %}
+  </section>
+{% endblock %}

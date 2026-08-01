@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ video.title }} · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="watch-layout">
+    <video id="player" class="player" controls preload="metadata" playsinline {% if video.thumbnail_url %}poster="{{ video.thumbnail_url }}"{% endif %} aria-label="Play {{ video.title }}">
+      <source src="{{ url_for('media_api', media_id=video.id) }}" type="video/{{ video.extension or 'mp4' }}">
+    </video>
+    <div class="panel">
+      <h1>{{ video.title }}</h1>
+      <p class="muted">
+        {% if video.channel_db_id %}<a href="{{ url_for('channel_page', channel_id=video.channel_db_id) }}">{{ video.channel or 'Unknown channel' }}</a>{% else %}{{ video.channel or 'Unknown channel' }}{% endif %}
+        {% if video.duration %} · {{ video.duration|duration }}{% endif %} · {{ video.file_size|filesize }}
+        {% if video.watch_progress and not video.watched %} · {{ video.watch_progress|round|int }}% watched{% endif %}
+      </p>
+      <p><code>{{ video.file_path }}</code></p>
+      <form method="post" action="{{ url_for('watched_api', media_id=video.id) }}">
+        <input type="hidden" name="watched" value="{{ 0 if video.watched else 1 }}">
+        <input type="hidden" name="next" value="{{ url_for('watch_page', media_id=video.id) }}">
+        <button class="secondary" type="submit">Mark {{ 'unwatched' if video.watched else 'watched' }}</button>
+      </form>
+      <form class="danger-action" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
+        <input type="hidden" name="next" value="{{ url_for('home_page') }}">
+        <button class="danger" type="submit">Delete &amp; ignore</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    const player = document.querySelector('#player');
+    const progressUrl = {{ url_for('media_progress_api', media_id=video.id)|tojson }};
+    const savedProgress = {{ video.watch_progress|float }};
+    let lastSentAt = 0;
+    let lastSentPercentage = null;
+
+    function progressPayload() {
+      return {current_time: player.currentTime, duration: player.duration};
+    }
+
+    function currentPercentage() {
+      if (!Number.isFinite(player.duration) || player.duration <= 0) return null;
+      return player.currentTime / player.duration * 100;
+    }
+
+    async function saveProgress(force = false) {
+      const percentage = currentPercentage();
+      if (percentage === null) return;
+      const now = Date.now();
+      if (!force && now - lastSentAt < 5000) return;
+      if (!force && lastSentPercentage !== null && Math.abs(percentage - lastSentPercentage) < 1) return;
+      lastSentAt = now;
+      lastSentPercentage = percentage;
+      try {
+        await fetch(progressUrl, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(progressPayload()),
+          keepalive: true,
+        });
+      } catch (_) {
+        // A later playback event will retry.
+      }
+    }
+
+    player.addEventListener('loadedmetadata', () => {
+      if (savedProgress >= 5 && savedProgress < 95) {
+        player.currentTime = player.duration * savedProgress / 100;
+      }
+    }, {once: true});
+    player.addEventListener('timeupdate', () => saveProgress(false));
+    player.addEventListener('pause', () => saveProgress(true));
+    player.addEventListener('ended', () => saveProgress(true));
+    window.addEventListener('pagehide', () => {
+      if (currentPercentage() !== null) {
+        navigator.sendBeacon(
+          progressUrl,
+          new Blob([JSON.stringify(progressPayload())], {type: 'application/json'}),
+        );
+      }
+    });
+  </script>
+{% endblock %}

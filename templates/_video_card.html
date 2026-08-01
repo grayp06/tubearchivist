@@ -1,0 +1,22 @@
+<article class="video-card">
+  <a class="thumbnail" href="{{ url_for('watch_page', media_id=video.id) }}" aria-label="Watch {{ video.title }}">
+    {% if video.thumbnail_url %}<img src="{{ video.thumbnail_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+    {% if video.watched %}<span class="watched-badge">Watched</span>{% endif %}
+    {% if video.duration %}<span class="duration">{{ video.duration|duration }}</span>{% endif %}
+    {% if video.watch_progress %}<span class="watch-progress-track" aria-label="{{ video.watch_progress|round|int }} percent watched"><span class="watch-progress-bar" style="width:{{ video.watch_progress }}%"></span></span>{% endif %}
+  </a>
+  <a class="video-title" href="{{ url_for('watch_page', media_id=video.id) }}">{{ video.title }}</a>
+  <p class="video-meta">
+    {% if video.channel_db_id %}<a href="{{ url_for('channel_page', channel_id=video.channel_db_id) }}">{{ video.channel or 'Unknown channel' }}</a>{% else %}{{ video.channel or 'Unknown channel' }}{% endif %}
+    · {{ 'Watched' if video.watched else ((video.watch_progress|round|int|string) + '% watched' if video.watch_progress else 'Unwatched') }}
+  </p>
+  <form class="card-actions" method="post" action="{{ url_for('watched_api', media_id=video.id) }}">
+    <input type="hidden" name="watched" value="{{ 0 if video.watched else 1 }}">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button class="small secondary" type="submit">Mark {{ 'unwatched' if video.watched else 'watched' }}</button>
+  </form>
+  <form class="card-actions" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button class="small danger" type="submit">Delete &amp; ignore</button>
+  </form>
+</article>

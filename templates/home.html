@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Home · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div>
+      <h1>Recently downloaded</h1>
+      <div class="muted">Your newest archived videos.</div>
+    </div>
+    <a class="button" href="{{ url_for('downloads_page') }}">Add a download</a>
+  </div>
+
+  {% if videos %}
+    <section class="video-grid" aria-label="Recently downloaded videos">
+      {% for video in videos %}
+        {% include "_video_card.html" %}
+      {% endfor %}
+    </section>
+  {% else %}
+    <div class="empty">No downloaded videos yet. Add your first URL from Downloads.</div>
+  {% endif %}
+{% endblock %}

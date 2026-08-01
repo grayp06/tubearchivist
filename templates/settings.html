@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Settings · TubeArchivist Lite{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div><h1>Settings</h1><div class="muted">Persistent downloader defaults stored in SQLite.</div></div>
+  </div>
+  {% if saved %}<p class="notice" role="status">Settings saved. New queue work will use these values.</p>{% endif %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form class="settings-form panel" method="post" action="{{ url_for('update_settings_page') }}">
+    <div class="settings-field">
+      <label for="collection-limit">Channel and playlist item limit</label>
+      <input id="collection-limit" name="collection_limit" type="number" min="1" max="10000" step="1" required value="{{ settings.collection_limit }}">
+      <p class="settings-help">At most this many entries are inspected per channel or playlist submission. Already archived and already queued videos do not consume a download slot.</p>
+    </div>
+    <div class="settings-field">
+      <label for="download-quality">Video quality</label>
+      <select id="download-quality" name="download_quality" required>
+        {% for value, label in quality_options.items() %}
+          <option value="{{ value }}" {% if settings.download_quality == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="settings-help">yt-dlp selects the best video up to this resolution and merges it with the best audio. Lower resolutions remain available as fallbacks.</p>
+    </div>
+    <div><button type="submit">Save settings</button></div>
+  </form>
+
+  <h2>Ignored videos</h2>
+  <p class="muted">Ignored videos are skipped when added directly or found inside a channel or playlist.</p>
+  <section class="download-list" aria-label="Ignored videos">
+    {% for item in ignored %}
+      <article class="download-row">
+        <div>
+          <strong>{{ item.title or item.source_url }}</strong>
+          <div class="download-meta"><span>{{ item.source_url }}</span><span>Ignored {{ item.ignored_at }}</span></div>
+        </div>
+        <form method="post" action="{{ url_for('remove_ignored_page', ignored_id=item.id) }}">
+          <button class="small secondary" type="submit">Allow again</button>
+        </form>
+      </article>
+    {% else %}
+      <div class="empty">No videos are ignored.</div>
+    {% endfor %}
+  </section>
+{% endblock %}
