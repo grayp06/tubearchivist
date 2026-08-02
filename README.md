@@ -19,7 +19,28 @@ The archive includes:
 - archive statistics, download-folder reconciliation, SQLite snapshots, JSON
   export, and OPML subscription import/export.
 
-Authentication, multiple users, notifications, and automatic schedules are
+## TubeArchivist API compatibility
+
+The `/api/` surface is a drop-in contract replacement for TubeArchivist
+**v0.5.10**. It exposes the same 58 paths and HTTP methods for videos,
+channels, playlists, downloads, search, watched state, settings, snapshots,
+backups, statistics, users, tasks, schedules, notifications, membership,
+OpenAPI schema, and interactive API documentation. List endpoints use TubeArchivist's
+`data`/`paginate` envelope and resource fields retain the upstream names.
+
+Existing clients may continue to send `Authorization: Token <token>`. The
+token is available from `GET /api/appsettings/token/`, can be rotated with
+`DELETE /api/appsettings/token/`, and is intentionally optional because this
+edition remains a localhost-only, no-auth application. Interactive API
+documentation is at <http://localhost:8088/api/docs/> and the schema is at
+<http://localhost:8088/api/schema/>.
+
+API task and schedule records are persisted in SQLite. Operations available in
+this architecture execute locally; configuration-only integrations such as
+membership and notification delivery retain their upstream request/response
+contracts but report that no remote service is configured.
+
+Authentication, multiple users, notification delivery, and automatic schedules are
 intentionally omitted. This localhost-oriented edition keeps those out to
 preserve the requested simplicity and memory profile; subscription scans and
 maintenance are explicit manual actions.

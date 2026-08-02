@@ -35,10 +35,12 @@ from features import (
     queue_subscription_scan,
     rescan_filesystem,
     retry_download,
+    save_external_playlist,
     search_media,
     set_media_favorite,
     set_media_tags,
     subscriptions_opml,
+    initialize_features,
 )
 from library import (
     add_ignored,
@@ -1006,6 +1008,407 @@ class FlaskEndpointTests(unittest.TestCase):
                 self.assertEqual(response.headers["Accept-Ranges"], "bytes")
                 response.close()
                 self.assertEqual(client.get("/api/media/999").status_code, 404)
+
+
+class TubeArchivistApiCompatibilityTests(unittest.TestCase):
+    """Exercise the public TubeArchivist v0.5.10 API contract end to end."""
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.database_path = self.root / "data" / "library.db"
+        self.download_dir = self.root / "downloads"
+        self.snapshot_dir = self.root / "snapshots"
+        self.download_dir.mkdir()
+        initialize_database(self.database_path)
+        initialize_features(self.database_path)
+        update_settings(
+            self.database_path,
+            {"cookie_path": str(self.root / "cookies.txt"), "page_size": 24},
+        )
+        self.video_path = self.download_dir / "API video [api-video].mp4"
+        self.video_path.write_bytes(b"api-video-data")
+        self.media_id = save_media(
+            self.database_path,
+            "https://www.youtube.com/watch?v=api-video",
+            {
+                "id": "api-video",
+                "extractor_key": "Youtube",
+                "title": "API contract video",
+                "channel": "API channel",
+                "channel_id": "api-channel",
+                "channel_url": "https://www.youtube.com/channel/api-channel",
+                "channel_thumbnail": "https://example.com/channel.jpg",
+                "duration": 100,
+                "upload_date": "20260801",
+                "description": "A searchable API description",
+                "thumbnail": "https://example.com/video.jpg",
+                "webpage_url": "https://www.youtube.com/watch?v=api-video",
+                "ext": "mp4",
+                "view_count": 10,
+                "like_count": 2,
+                "categories": ["Education"],
+                "comments": [],
+            },
+            self.video_path,
+        )
+        set_media_tags(self.database_path, self.media_id, "contract, api")
+        self.playlist = create_playlist(self.database_path, "API playlist")
+        add_playlist_media(self.database_path, self.playlist["id"], self.media_id)
+        enqueue_download(
+            self.database_path,
+            "https://www.youtube.com/watch?v=queued-video",
+            kind="video",
+        )
+        add_ignored(
+            self.database_path,
+            "https://www.youtube.com/watch?v=ignored-video",
+            "Youtube",
+            "ignored-video",
+            "Ignored video",
+        )
+        self.patchers = [
+            patch("app.DATABASE_PATH", self.database_path),
+            patch("app.DOWNLOAD_DIR", self.download_dir),
+            patch("app.SNAPSHOT_DIR", self.snapshot_dir),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        self.client = APP.test_client()
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temporary_directory.cleanup()
+
+    def assert_success(self, response):
+        self.assertLess(response.status_code, 400, response.get_data(as_text=True))
+
+    def test_route_and_method_inventory_matches_v0510(self):
+        expected = {
+            "/api/ping/": {"GET"},
+            "/api/refresh/": {"GET", "POST"},
+            "/api/watched/": {"POST"},
+            "/api/search/": {"GET"},
+            "/api/notification/": {"GET"},
+            "/api/health/": {"GET"},
+            "/api/video/": {"GET"},
+            "/api/video/<video_id>/": {"GET", "DELETE"},
+            "/api/video/<video_id>/nav/": {"GET"},
+            "/api/video/<video_id>/progress/": {"POST", "DELETE"},
+            "/api/video/<video_id>/comment/": {"GET"},
+            "/api/video/<video_id>/similar/": {"GET"},
+            "/api/channel/": {"GET", "POST"},
+            "/api/channel/search/": {"GET"},
+            "/api/channel/<channel_id>/": {"GET", "POST", "DELETE"},
+            "/api/channel/<channel_id>/aggs/": {"GET"},
+            "/api/channel/<channel_id>/nav/": {"GET"},
+            "/api/playlist/": {"GET", "POST"},
+            "/api/playlist/custom/": {"POST"},
+            "/api/playlist/custom/<playlist_id>/": {"POST"},
+            "/api/playlist/<playlist_id>/": {"GET", "POST", "DELETE"},
+            "/api/download/": {"GET", "POST", "PATCH", "DELETE"},
+            "/api/download/aggs/": {"GET"},
+            "/api/download/<video_id>/": {"GET", "POST", "DELETE"},
+            "/api/appsettings/config/": {"GET", "POST"},
+            "/api/appsettings/snapshot/": {"GET", "POST"},
+            "/api/appsettings/snapshot/<snapshot_id>/": {"GET", "POST", "DELETE"},
+            "/api/appsettings/backup/": {"GET", "POST"},
+            "/api/appsettings/backup/<path:filename>/": {"GET", "POST", "DELETE"},
+            "/api/appsettings/cookie/": {"GET", "POST", "PUT", "DELETE"},
+            "/api/appsettings/token/": {"GET", "DELETE"},
+            "/api/appsettings/rescan-filesystem/": {"POST"},
+            "/api/appsettings/manual-import/": {"POST"},
+            "/api/appsettings/membership/profile/": {"GET"},
+            "/api/appsettings/membership/sync/": {"POST"},
+            "/api/appsettings/membership/token/": {"GET", "POST", "DELETE"},
+            "/api/stats/video/": {"GET"},
+            "/api/stats/channel/": {"GET"},
+            "/api/stats/playlist/": {"GET"},
+            "/api/stats/download/": {"GET"},
+            "/api/stats/watch/": {"GET"},
+            "/api/stats/downloadhist/": {"GET"},
+            "/api/stats/biggestchannels/": {"GET"},
+            "/api/task/by-name/": {"GET"},
+            "/api/task/by-name/<task_name>/": {"GET", "POST"},
+            "/api/task/by-id/<task_id>/": {"GET", "POST"},
+            "/api/task/schedule/": {"GET"},
+            "/api/task/schedule/<task_name>/": {"GET", "POST", "DELETE"},
+            "/api/task/notification/": {"GET", "POST", "DELETE"},
+            "/api/task/notification/test/": {"POST"},
+            "/api/user/login/": {"POST"},
+            "/api/user/logout/": {"POST"},
+            "/api/user/account/": {"GET"},
+            "/api/user/me/": {"GET", "POST"},
+            "/api/schema/": {"GET"},
+            "/api/docs/": {"GET"},
+        }
+        actual = {
+            rule.rule: rule.methods - {"HEAD", "OPTIONS"}
+            for rule in APP.url_map.iter_rules()
+            if rule.rule.startswith("/api/")
+            and rule.rule not in {
+                "/api/health",
+                "/api/jobs",
+                "/api/library",
+                "/api/downloads",
+                "/api/media/<int:media_id>",
+                "/api/media/<int:media_id>/progress",
+            }
+        }
+        self.assertEqual(actual, expected)
+
+    def test_archive_read_contracts(self):
+        ping = self.client.get("/api/ping/", headers={"Authorization": "Token anything"})
+        self.assertEqual(ping.get_json()["version"], "v0.5.10")
+        self.assertEqual(self.client.get("/api/health/").get_json(), "OK")
+
+        videos = self.client.get("/api/video/?type=videos&watch=unwatched")
+        self.assert_success(videos)
+        video_payload = videos.get_json()
+        self.assertEqual(set(video_payload), {"data", "paginate"})
+        self.assertEqual(video_payload["data"][0]["youtube_id"], "api-video")
+        self.assertTrue(
+            {"active", "channel", "media_url", "player", "stats", "streams", "tags"}
+            <= set(video_payload["data"][0])
+        )
+        for path in (
+            "/api/video/api-video/",
+            "/api/video/api-video/nav/",
+            "/api/video/api-video/comment/",
+            "/api/video/api-video/similar/",
+            "/api/channel/",
+            "/api/channel/search/?q=api-channel",
+            "/api/channel/api-channel/",
+            "/api/channel/api-channel/aggs/",
+            "/api/channel/api-channel/nav/",
+            "/api/playlist/",
+            f"/api/playlist/{self.playlist['playlist_id']}/",
+            "/api/download/",
+            "/api/download/queued-video/",
+            "/api/download/aggs/?filter=pending",
+            "/api/search/?query=contract",
+            "/api/search/?query=video:API",
+            "/api/notification/",
+            "/api/refresh/",
+        ):
+            with self.subTest(path=path):
+                self.assert_success(self.client.get(path))
+
+        media = self.client.get(
+            f"/media/api-channel/{self.video_path.name}",
+            headers={"Range": "bytes=0-2"},
+        )
+        self.assertEqual(media.status_code, 206)
+        self.assertEqual(media.data, b"api")
+        media.close()
+
+    def test_settings_stats_user_and_task_contracts(self):
+        read_paths = [
+            "/api/appsettings/config/",
+            "/api/appsettings/cookie/",
+            "/api/appsettings/token/",
+            "/api/appsettings/snapshot/",
+            "/api/appsettings/backup/",
+            "/api/stats/video/",
+            "/api/stats/channel/",
+            "/api/stats/playlist/",
+            "/api/stats/download/",
+            "/api/stats/watch/",
+            "/api/stats/downloadhist/",
+            "/api/stats/biggestchannels/?order=media_size",
+            "/api/user/account/",
+            "/api/user/me/",
+            "/api/task/by-name/",
+            "/api/task/schedule/",
+            "/api/task/notification/",
+            "/api/appsettings/membership/token/",
+            "/api/schema/",
+            "/api/docs/",
+        ]
+        for path in read_paths:
+            with self.subTest(path=path):
+                self.assert_success(self.client.get(path))
+
+        schema = self.client.get("/api/schema/").get_json()
+        self.assertIn("/api/video/{video_id}/", schema["paths"])
+        self.assertNotIn("/api/video/<video_id>/", schema["paths"])
+        self.assertNotIn("/api/downloads", schema["paths"])
+        self.assertNotIn("/media/{channel_id}/{filename}", schema["paths"])
+
+        config = self.client.post(
+            "/api/appsettings/config/",
+            json={"subscriptions": {"channel_size": 50}, "downloads": {"add_metadata": False}},
+        )
+        self.assertEqual(config.get_json()["subscriptions"]["channel_size"], 50)
+        self.assertEqual(get_settings(self.database_path)["collection_limit"], 50)
+        self.assert_success(
+            self.client.put(
+                "/api/appsettings/cookie/",
+                json={"cookie": "# Netscape HTTP Cookie File\n"},
+            )
+        )
+        self.assertEqual(self.client.delete("/api/appsettings/cookie/").status_code, 204)
+
+        snapshot = self.client.post("/api/appsettings/snapshot/").get_json()["snapshot_name"]
+        self.assert_success(self.client.get(f"/api/appsettings/snapshot/{snapshot}/"))
+        self.assert_success(self.client.post(f"/api/appsettings/snapshot/{snapshot}/"))
+        backup = self.client.post("/api/appsettings/backup/")
+        self.assert_success(backup)
+        backup_name = self.client.get("/api/appsettings/backup/").get_json()[0]["filename"]
+        self.assert_success(self.client.get(f"/api/appsettings/backup/{backup_name}/"))
+        self.assert_success(self.client.post(f"/api/appsettings/backup/{backup_name}/"))
+
+        flags = {"ignore_error": True, "prefer_local": True}
+        self.assert_success(self.client.post("/api/appsettings/rescan-filesystem/", json=flags))
+        self.assert_success(self.client.post("/api/appsettings/manual-import/", json=flags))
+        self.assert_success(self.client.post("/api/user/login/", json={"username": "x", "password": "y"}))
+        self.assert_success(self.client.post("/api/user/logout/"))
+        self.assert_success(self.client.post("/api/user/me/", json={"grid_items": 5}))
+        self.assert_success(self.client.post("/api/appsettings/membership/token/", json={"token": "member"}))
+        self.assertEqual(self.client.get("/api/appsettings/membership/profile/").status_code, 400)
+        self.assert_success(self.client.post("/api/appsettings/membership/sync/"))
+
+        task = self.client.post("/api/task/by-name/download_pending/", json={}).get_json()
+        task_id = task["task_id"]
+        self.assert_success(self.client.get("/api/task/by-name/download_pending/"))
+        self.assert_success(self.client.get(f"/api/task/by-id/{task_id}/"))
+        self.assertEqual(
+            self.client.post(f"/api/task/by-id/{task_id}/", json={"command": "stop"}).status_code,
+            204,
+        )
+        self.assert_success(
+            self.client.post(
+                "/api/task/schedule/run_backup/",
+                json={"schedule": "0 0 * * *", "config": {}},
+            )
+        )
+        self.assert_success(self.client.get("/api/task/schedule/run_backup/"))
+        self.assert_success(
+            self.client.post(
+                "/api/task/notification/",
+                json={"task_name": "run_backup", "url": "json://example"},
+            )
+        )
+        self.assert_success(
+            self.client.post(
+                "/api/task/notification/test/",
+                json={"task_name": "run_backup", "url": "json://example"},
+            )
+        )
+
+    def test_mutating_archive_and_queue_contracts(self):
+        progress = self.client.post("/api/video/api-video/progress/", json={"position": 50})
+        self.assertEqual(progress.get_json()["progress"], 50)
+        self.assertEqual(self.client.delete("/api/video/api-video/progress/").status_code, 204)
+        self.assert_success(self.client.post("/api/watched/", json={"id": "api-video", "is_watched": True}))
+        self.assert_success(
+            self.client.post(
+                "/api/channel/api-channel/", json={"channel_subscribed": True}
+            )
+        )
+        self.assert_success(
+            self.client.post(
+                "/api/channel/",
+                json={"data": [{"channel_id": "api-channel", "channel_subscribed": False}]},
+            )
+        )
+        custom = self.client.post("/api/playlist/custom/", json={"playlist_name": "Second"})
+        custom_id = custom.get_json()["playlist_id"]
+        self.assert_success(
+            self.client.post(
+                f"/api/playlist/custom/{custom_id}/",
+                json={"action": "create", "video_id": "api-video"},
+            )
+        )
+        self.assertEqual(self.client.delete(f"/api/playlist/{custom_id}/").status_code, 204)
+        self.assert_success(
+            self.client.post(
+                "/api/playlist/",
+                json={"data": [{"playlist_id": "PL-contract", "playlist_subscribed": True}]},
+            )
+        )
+        self.assert_success(
+            self.client.post(
+                "/api/download/",
+                json={"data": [{"youtube_id": "new-video", "status": "pending"}]},
+            )
+        )
+        self.assert_success(
+            self.client.post("/api/download/new-video/", json={"status": "priority"})
+        )
+        self.assertEqual(self.client.delete("/api/download/new-video/").status_code, 204)
+        self.assertEqual(
+            self.client.patch("/api/download/?filter=ignore", json={"status": "pending"}).status_code,
+            204,
+        )
+
+    def test_delete_and_remaining_method_contracts(self):
+        regular_id = "PL-regular"
+        save_external_playlist(
+            self.database_path,
+            f"https://www.youtube.com/playlist?list={regular_id}",
+            {
+                "id": regular_id,
+                "extractor_key": "YoutubePlaylist",
+                "title": "Regular playlist",
+            },
+        )
+        self.assert_success(
+            self.client.post(
+                f"/api/playlist/{regular_id}/",
+                json={"playlist_subscribed": True, "playlist_sort_order": "bottom"},
+            )
+        )
+
+        self.assert_success(self.client.post("/api/appsettings/cookie/"))
+        self.assertEqual(self.client.delete("/api/appsettings/token/").status_code, 204)
+        self.assertEqual(
+            self.client.delete("/api/appsettings/membership/token/").status_code, 204
+        )
+
+        first_snapshot = self.client.post("/api/appsettings/snapshot/").get_json()[
+            "snapshot_name"
+        ]
+        self.assertEqual(
+            self.client.delete(f"/api/appsettings/snapshot/{first_snapshot}/").status_code,
+            204,
+        )
+        self.client.post("/api/appsettings/backup/")
+        backup_name = self.client.get("/api/appsettings/backup/").get_json()[0][
+            "filename"
+        ]
+        self.assertEqual(
+            self.client.delete(f"/api/appsettings/backup/{backup_name}/").status_code,
+            204,
+        )
+
+        self.assert_success(
+            self.client.post(
+                "/api/task/schedule/run_backup/",
+                json={"schedule": "0 1 * * *", "config": {}},
+            )
+        )
+        self.assertEqual(
+            self.client.delete("/api/task/schedule/run_backup/").status_code, 204
+        )
+        notification = {"task_name": "run_backup", "url": "json://delete-me"}
+        self.assert_success(self.client.post("/api/task/notification/", json=notification))
+        self.assertEqual(
+            self.client.delete("/api/task/notification/", json=notification).status_code,
+            204,
+        )
+
+        self.assertEqual(
+            self.client.delete("/api/download/?filter=pending").status_code, 204
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/playlist/{regular_id}/").status_code, 204
+        )
+        self.assertEqual(self.client.delete("/api/video/api-video/").status_code, 204)
+        self.assertEqual(
+            self.client.delete("/api/channel/api-channel/").status_code, 204
+        )
 
 
 if __name__ == "__main__":

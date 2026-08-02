@@ -1262,6 +1262,11 @@ def downloads_api() -> Response:
     return jsonify(download), 202
 
 
+from api_compat import register_ta_api
+
+register_ta_api(APP)
+
+
 @APP.errorhandler(404)
 def not_found(_error: object) -> tuple[Response, int] | tuple[str, int]:
     """Render page requests as HTML and API requests as JSON."""

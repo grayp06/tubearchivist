@@ -15,8 +15,9 @@ the lightweight architecture explicit.
 | Maintenance | Folder reconciliation, per-video metadata refresh, SQLite snapshots |
 | Portability | JSON archive export and OPML subscription import/export |
 | Reporting | Archive size/runtime/counts, queue counts, largest channels |
+| API | TubeArchivist v0.5.10 route/method and JSON contract, OpenAPI schema, optional token header |
 
 Deliberate differences from upstream: no authentication or multiple users, no
-Redis/Celery/Elasticsearch, no notifications, no browser polling, no automatic
+Redis/Celery/Elasticsearch, no notification delivery, no browser polling, no automatic
 scheduler, and one download at a time. These are architectural constraints,
 not unfinished UI placeholders.

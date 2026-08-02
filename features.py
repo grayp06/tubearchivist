@@ -80,6 +80,7 @@ def initialize_features(database_path: Path) -> None:
         _add_column(connection, "media", "subtitle_text TEXT")
         _add_column(connection, "downloads", "priority INTEGER NOT NULL DEFAULT 0")
         _add_column(connection, "downloads", "playlist_db_id INTEGER REFERENCES playlists(id)")
+        _add_column(connection, "playlists", "playlist_sort_order TEXT NOT NULL DEFAULT 'top'")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_subscriptions_enabled ON subscriptions(enabled, id)"
         )
