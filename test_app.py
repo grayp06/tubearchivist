@@ -280,8 +280,6 @@ class LibraryTests(unittest.TestCase):
             replayed = update_media_progress(database_path, media_id, 2)
             self.assertEqual(replayed["watch_progress"], 0)
             self.assertEqual(replayed["watched"], 1)
-
-
 class DownloadQueueTests(unittest.TestCase):
     def test_queued_and_active_video_rows_can_be_cancelled(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -568,6 +566,8 @@ class SettingsTests(unittest.TestCase):
                 options = yt_dlp_download_options(1, {})
 
             self.assertIn("height<=480", options["format"])
+            self.assertIn("vcodec^=avc1", options["format"])
+            self.assertEqual(options["format_sort"][0], "vcodec:h264")
             self.assertEqual(options["subtitleslangs"], ["en", "fr"])
             self.assertNotIn("writeinfojson", options)
             self.assertTrue(options["getcomments"])
@@ -606,8 +606,13 @@ class SettingsTests(unittest.TestCase):
             validate_settings("0", "1080")
         with self.assertRaises(ValueError):
             validate_settings("100", "invalid")
-        self.assertIn("height<=1080", quality_format("1080"))
-        self.assertEqual(quality_format("best"), "bestvideo+bestaudio/best")
+        selector_1080 = quality_format("1080")
+        selector_best = quality_format("best")
+        self.assertIn("height<=1080", selector_1080)
+        self.assertEqual(selector_1080.count("vcodec^=avc1"), 2)
+        self.assertEqual(selector_best.count("vcodec^=avc1"), 2)
+        self.assertIn("acodec^=mp4a", selector_best)
+        self.assertNotIn("bestvideo+bestaudio", selector_best)
         advanced = validate_advanced_settings(
             {
                 "collection_limit": "50",

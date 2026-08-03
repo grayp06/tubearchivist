@@ -10,7 +10,7 @@ the lightweight architecture explicit.
 | Channels | Normalized channel pages, subscription records, pause/remove/rescan |
 | Playlists | YouTube playlist capture, custom playlists, add/remove/reorder |
 | Queue | SQLite FIFO with priority, cancel, cancel-all, retry, ignore, history search |
-| Downloading | Video/channel/playlist URLs, quality, limits, rate cap, cookies, subtitles, embedded metadata, comments, SponsorBlock |
+| Downloading | Video/channel/playlist URLs, H.264/AAC MP4 output, quality, limits, rate cap, cookies, subtitles, embedded metadata, comments, SponsorBlock |
 | Playback | Local range streaming, resume position, event-driven progress, watched threshold |
 | Maintenance | Folder reconciliation, per-video metadata refresh, SQLite snapshots |
 | Portability | JSON archive export and OPML subscription import/export |

@@ -28,7 +28,7 @@
           <option value="{{ value }}" {% if settings.download_quality == value %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
-      <p class="settings-help">yt-dlp selects the best video up to this resolution and merges it with the best audio. Lower resolutions remain available as fallbacks.</p>
+      <p class="settings-help">yt-dlp selects H.264 video up to this resolution with AAC audio in MP4 for broad browser and mobile compatibility. Lower compatible resolutions remain available as fallbacks.</p>
     </div>
     <div><button type="submit">Save settings</button></div>
   </form>

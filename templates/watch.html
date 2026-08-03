@@ -5,7 +5,7 @@
     {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
     {% set thumb_url = video_thumbnail_url(video.video_id) %}
     <video id="player" class="player" controls preload="metadata" playsinline {% if thumb_url %}poster="{{ thumb_url }}"{% endif %} aria-label="Play {{ video.title }}">
-      <source src="{{ url_for('media_api', media_id=video.id) }}" type="video/{{ video.extension or 'mp4' }}">
+      <source src="{{ url_for('media_api', media_id=video.id) }}" type="video/mp4">
     </video>
     <div class="panel">
       <h1>{{ video.title }}</h1>

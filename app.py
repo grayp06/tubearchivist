@@ -238,14 +238,16 @@ def delete_media_files(file_path: Path) -> None:
 
 
 def quality_format(quality: str) -> str:
-    """Translate a persisted quality preset into a yt-dlp format selector."""
+    """Select conservative H.264/AAC streams that mobile browsers can play."""
+    video = "bestvideo[vcodec^=avc1][ext=mp4]"
+    audio = "bestaudio[acodec^=mp4a][ext=m4a]"
+    combined = "best[vcodec^=avc1][ext=mp4]"
     if quality == "best":
-        return "bestvideo+bestaudio/best"
+        return f"{video}+{audio}/{combined}"
     height = int(quality)
     return (
-        f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-        f"bestvideo[height<={height}]+bestaudio/"
-        f"best[height<={height}]"
+        f"{video}[height<={height}]+{audio}/"
+        f"{combined}[height<={height}]"
     )
 
 
@@ -320,6 +322,15 @@ def yt_dlp_download_options(download_id: int, state: dict[str, float]) -> dict:
     options: dict = {
         "format": quality_format(settings["download_quality"]),
         "merge_output_format": "mp4",
+        "format_sort": [
+            "vcodec:h264",
+            "lang",
+            "quality",
+            "res",
+            "fps",
+            "hdr:12",
+            "acodec:aac",
+        ],
         "noplaylist": True,
         "outtmpl": str(CACHE_DIR / "download" / "%(id)s.mp4"),
         "progress_hooks": [lambda data: progress_hook(download_id, state, data)],

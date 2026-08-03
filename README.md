@@ -14,7 +14,7 @@ The archive includes:
 - metadata, description, tag, ID, channel, and downloaded-subtitle search;
 - local playback, event-driven progress saving, and 95% watched detection;
 - individual/bulk cancellation, priority, retry, ignore, and delete-and-ignore;
-- 480p through 4K/best quality controls, rate limiting, subtitles, embedded metadata,
+- browser-compatible H.264/AAC MP4 downloads with 480p through 4K/best quality controls, rate limiting, subtitles, embedded metadata,
   cookies, optional comments, and SponsorBlock removal;
 - archive statistics, download-folder reconciliation, SQLite snapshots, JSON
   export, and OPML subscription import/export.
