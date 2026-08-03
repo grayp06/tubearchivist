@@ -6,5 +6,9 @@ services:
     ports:
       - "127.0.0.1:8088:8080"
     volumes:
-      - ./downloads:/downloads
+      - ./downloads:/youtube
+      - ./cache:/cache
       - ./data:/data
+    environment:
+      - DOWNLOAD_DIR=/youtube
+      - CACHE_DIR=/cache

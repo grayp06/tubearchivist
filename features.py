@@ -596,7 +596,7 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
         }
     disk_files = {
         str(path.resolve()): path
-        for path in download_dir.iterdir()
+        for path in download_dir.rglob("*")
         if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES and ".temp." not in path.name
     }
     with connect(database_path) as connection:
@@ -607,16 +607,24 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
         if path_string in known:
             continue
         match = VIDEO_ID_PATTERN.search(path.name)
-        if match is None:
+        if match:
+            video_id = match.group(1)
+        elif (
+            path.parent.resolve() != download_dir.resolve()
+            and path.suffix.lower() == ".mp4"
+            and re.fullmatch(r"[A-Za-z0-9_-]+", path.stem)
+        ):
+            video_id = path.stem
+        else:
             continue
-        video_id = match.group(1)
         if video_id in known_video_ids:
             continue
         info_path = next(
             (
                 candidate
                 for candidate in path.parent.glob("*.info.json")
-                if f"[{video_id}]" in candidate.name
+                if candidate.name == f"{video_id}.info.json"
+                or f"[{video_id}]" in candidate.name
             ),
             None,
         )
@@ -630,6 +638,9 @@ def rescan_filesystem(database_path: Path, download_dir: Path) -> dict:
         info.setdefault("title", path.stem.rsplit(f" [{video_id}]", 1)[0])
         info.setdefault("extractor", "Filesystem")
         info.setdefault("webpage_url", f"https://www.youtube.com/watch?v={video_id}")
+        if path.parent.resolve() != download_dir.resolve():
+            info.setdefault("channel_id", path.parent.name)
+            info.setdefault("channel", path.parent.name)
         save_media(database_path, str(info["webpage_url"]), info, path)
         added += 1
         known_video_ids.add(video_id)

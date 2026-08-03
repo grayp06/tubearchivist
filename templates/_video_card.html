@@ -1,6 +1,7 @@
 <article class="video-card">
   <a class="thumbnail" href="{{ url_for('watch_page', media_id=video.id) }}" aria-label="Watch {{ video.title }}">
-    {% if video.thumbnail_url %}<img src="{{ video.thumbnail_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+    {% set thumb_url = video_thumbnail_url(video.video_id) %}
+    {% if thumb_url %}<img src="{{ thumb_url }}" alt="" loading="lazy">{% endif %}
     {% if video.watched %}<span class="watched-badge">Watched</span>{% endif %}
     {% if video.duration %}<span class="duration">{{ video.duration|duration }}</span>{% endif %}
     {% if video.watch_progress %}<span class="watch-progress-track" aria-label="{{ video.watch_progress|round|int }} percent watched"><span class="watch-progress-bar" style="width:{{ video.watch_progress }}%"></span></span>{% endif %}

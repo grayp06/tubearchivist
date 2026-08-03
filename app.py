@@ -73,7 +73,6 @@ from library import (
     is_ignored,
     list_channel_media,
     list_channels,
-    list_channels_missing_thumbnail,
     list_downloads,
     list_ignored,
     list_media,
@@ -81,17 +80,33 @@ from library import (
     remove_ignored,
     save_media,
     set_media_watched,
-    update_channel_thumbnail,
+    update_channel_art,
     update_download,
     update_media_progress,
     update_settings,
 )
 from yt_dlp import YoutubeDL
+from storage import (
+    archive_download,
+    cache_channel_art,
+    cache_known_artwork,
+    cache_playlist_thumbnail,
+    cache_video_thumbnail,
+    channel_art_relative_path,
+    delete_playlist_thumbnail,
+    delete_video_thumbnail,
+    migrate_storage_layout,
+    playlist_thumb_relative_path,
+    select_channel_art,
+    sync_playlist_thumbnail,
+    video_thumb_relative_path,
+)
 
 
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.environ.get("APP_PORT", "8080"))
-DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "/downloads"))
+DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "/youtube"))
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "/data/library.db"))
 SNAPSHOT_DIR = Path(os.environ.get("SNAPSHOT_DIR", "/data/snapshots"))
 
@@ -162,6 +177,28 @@ def page_url(page: int) -> str:
 APP.jinja_env.globals["page_url"] = page_url
 
 
+def cached_video_thumbnail(video_id: object) -> str | None:
+    relative = video_thumb_relative_path(video_id)
+    return f"/cache/{relative.as_posix()}" if (CACHE_DIR / relative).is_file() else None
+
+
+def cached_channel_art(channel_id: object, art_type: str = "thumb") -> str | None:
+    relative = channel_art_relative_path(channel_id, art_type)
+    return f"/cache/{relative.as_posix()}" if (CACHE_DIR / relative).is_file() else None
+
+
+def cached_playlist_thumbnail(playlist_id: object) -> str | None:
+    relative = playlist_thumb_relative_path(playlist_id)
+    return f"/cache/{relative.as_posix()}" if (CACHE_DIR / relative).is_file() else None
+
+
+APP.jinja_env.globals.update(
+    video_thumbnail_url=cached_video_thumbnail,
+    channel_art_url=cached_channel_art,
+    playlist_thumbnail_url=cached_playlist_thumbnail,
+)
+
+
 def get_downloaded_file(info: dict, downloader: YoutubeDL) -> Path:
     """Resolve the exact file yt-dlp wrote to disk."""
     candidates = [
@@ -175,12 +212,14 @@ def get_downloaded_file(info: dict, downloader: YoutubeDL) -> Path:
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
-    video_marker = f"[{info.get('id')}]"
+    video_id = str(info.get("id") or "")
+    video_marker = f"[{video_id}]"
+    download_cache = CACHE_DIR / "download"
     matches = [
         path
-        for path in DOWNLOAD_DIR.iterdir()
+        for path in download_cache.iterdir()
         if path.is_file()
-        and video_marker in path.name
+        and (path.stem == video_id or video_marker in path.name)
         and path.suffix not in {".part", ".ytdl"}
     ]
     if matches:
@@ -277,17 +316,17 @@ def validate_advanced_settings(form: object) -> dict:
 def yt_dlp_download_options(download_id: int, state: dict[str, float]) -> dict:
     """Build yt-dlp options from SQLite settings only when work is claimed."""
     settings = get_settings(DATABASE_PATH)
+    (CACHE_DIR / "download").mkdir(parents=True, exist_ok=True)
     options: dict = {
         "format": quality_format(settings["download_quality"]),
         "merge_output_format": "mp4",
         "noplaylist": True,
-        "outtmpl": str(DOWNLOAD_DIR / settings["output_template"]),
+        "outtmpl": str(CACHE_DIR / "download" / "%(id)s.mp4"),
         "progress_hooks": [lambda data: progress_hook(download_id, state, data)],
         "postprocessor_hooks": [lambda _data: progress_hook(download_id, state, {})],
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
-        "writeinfojson": settings["write_info_json"],
         "getcomments": settings["download_comments"],
     }
     if settings["download_subtitles"]:
@@ -308,39 +347,28 @@ def yt_dlp_download_options(download_id: int, state: dict[str, float]) -> dict:
         options["cookiefile"] = str(cookie_path)
     if settings["rate_limit"]:
         options["ratelimit"] = int(settings["rate_limit"]) * 1024
+    postprocessors = []
+    if settings["write_info_json"]:
+        postprocessors.append({"key": "FFmpegMetadata", "add_chapters": True})
     categories = [
         item.strip()
         for item in settings["sponsorblock_categories"].split(",")
         if item.strip()
     ]
     if categories:
-        options["postprocessors"] = [
-            {"key": "SponsorBlock", "categories": categories},
-            {"key": "ModifyChapters", "remove_sponsor_segments": categories},
-        ]
+        postprocessors.extend(
+            [
+                {"key": "SponsorBlock", "categories": categories},
+                {"key": "ModifyChapters", "remove_sponsor_segments": categories},
+            ]
+        )
+    if postprocessors:
+        options["postprocessors"] = postprocessors
     return options
 
 
-def choose_channel_thumbnail(info: dict) -> str | None:
-    """Choose the channel avatar rather than its wide banner."""
-    thumbnails = info.get("thumbnails") or []
-    for thumbnail in reversed(thumbnails):
-        if "avatar" in str(thumbnail.get("id", "")) and thumbnail.get("url"):
-            return str(thumbnail["url"])
-    square = [
-        thumbnail
-        for thumbnail in thumbnails
-        if thumbnail.get("url")
-        and thumbnail.get("width")
-        and thumbnail.get("width") == thumbnail.get("height")
-    ]
-    if square:
-        return str(max(square, key=lambda item: item.get("width", 0))["url"])
-    return None
-
-
 def hydrate_missing_channel_thumbnails(limit: int = 5) -> None:
-    """Use a metadata-only yt-dlp lookup to cache missing channel avatars."""
+    """Fetch and cache TubeArchivist's three channel artwork variants."""
     options = {
         "quiet": True,
         "no_warnings": True,
@@ -348,13 +376,45 @@ def hydrate_missing_channel_thumbnails(limit: int = 5) -> None:
         "playlistend": 0,
         "skip_download": True,
     }
-    for channel in list_channels_missing_thumbnail(DATABASE_PATH, limit):
+    channels = list_channels(DATABASE_PATH)
+    attempted = 0
+    for channel in channels:
+        expected = [
+            CACHE_DIR / channel_art_relative_path(channel["channel_id"], art_type)
+            for art_type in ("thumb", "banner", "tvart")
+        ]
+        if (
+            all(path.is_file() for path in expected)
+            and channel.get("thumbnail_url")
+            and channel.get("banner_url")
+            and channel.get("tvart_url")
+        ):
+            continue
+        if attempted >= limit:
+            break
+        attempted += 1
         try:
             with YoutubeDL(options) as downloader:
                 info = downloader.extract_info(channel["source_url"], download=False)
-            thumbnail_url = choose_channel_thumbnail(info)
-            if thumbnail_url:
-                update_channel_thumbnail(DATABASE_PATH, channel["id"], thumbnail_url)
+            art = select_channel_art(info)
+            update_channel_art(
+                DATABASE_PATH,
+                channel["id"],
+                thumbnail_url=art["thumb"],
+                banner_url=art["banner"],
+                tvart_url=art["tvart"],
+                description=info.get("description"),
+                subscriber_count=info.get("channel_follower_count") or 0,
+                tags=info.get("tags") or [],
+            )
+            cache_channel_art(
+                CACHE_DIR,
+                channel["channel_id"],
+                art["thumb"],
+                art["banner"],
+                art["tvart"],
+                skip_existing=False,
+            )
         except Exception as exc:
             print(
                 f"Unable to fetch thumbnail for channel {channel['id']}: {exc}",
@@ -458,9 +518,16 @@ def download_video(download: dict) -> None:
         info = downloader.extract_info(url, download=True)
         if is_download_cancelled(DATABASE_PATH, download_id):
             raise DownloadCancelled("Download cancelled by user.")
-        file_path = get_downloaded_file(info, downloader).resolve()
+        downloaded_path = get_downloaded_file(info, downloader).resolve()
+        file_path = archive_download(
+            downloaded_path,
+            DOWNLOAD_DIR,
+            info.get("channel_id") or info.get("uploader_id"),
+            info.get("id"),
+        )
         media_id = save_media(DATABASE_PATH, url, info, file_path)
         attach_download_to_playlist(DATABASE_PATH, download_id, media_id)
+        cache_video_thumbnail(CACHE_DIR, info.get("id"), info.get("thumbnail"))
     update_download(
         DATABASE_PATH,
         download_id,
@@ -501,6 +568,11 @@ def expand_collection(download: dict, info: dict) -> None:
             info,
         )
         set_download_playlist(DATABASE_PATH, download_id, playlist_id)
+        playlist_external_id = str(info.get("id") or info.get("playlist_id") or "")
+        if playlist_external_id:
+            thumbnails = info.get("thumbnails") or []
+            source = thumbnails[-1].get("url") if thumbnails else info.get("thumbnail")
+            cache_playlist_thumbnail(CACHE_DIR, playlist_external_id, source)
 
     position = 0
     total_items = count_collection_items(DATABASE_PATH, download_id)
@@ -592,6 +664,7 @@ def run_download(download: dict) -> None:
 
 def download_worker() -> None:
     """Continuously claim SQLite queue rows in FIFO order."""
+    cache_known_artwork(DATABASE_PATH, CACHE_DIR)
     hydrate_missing_channel_thumbnails()
     while True:
         QUEUE_WAKE.clear()
@@ -751,11 +824,12 @@ def playlists_page() -> str:
 @APP.post("/playlists")
 def create_playlist_page() -> tuple[str, int] | Response:
     try:
-        create_playlist(
+        playlist = create_playlist(
             DATABASE_PATH,
             str(request.form.get("name", "")),
             str(request.form.get("description", "")),
         )
+        sync_playlist_thumbnail(DATABASE_PATH, CACHE_DIR, playlist["id"])
     except ValueError as exc:
         return render_template("playlists.html", playlists=list_playlists(DATABASE_PATH), error=str(exc)), 400
     return redirect(url_for("playlists_page"), code=303)
@@ -775,8 +849,12 @@ def playlist_page(playlist_id: int) -> str:
 
 @APP.post("/playlists/<int:playlist_id>/delete")
 def delete_playlist_page(playlist_id: int) -> Response:
+    playlist = get_playlist(DATABASE_PATH, playlist_id)
+    if playlist is None:
+        abort(404)
     if not delete_playlist(DATABASE_PATH, playlist_id):
         abort(404)
+    delete_playlist_thumbnail(CACHE_DIR, playlist["playlist_id"])
     return redirect(url_for("playlists_page"), code=303)
 
 
@@ -784,6 +862,7 @@ def delete_playlist_page(playlist_id: int) -> Response:
 def add_to_playlist_page(playlist_id: int, media_id: int) -> Response:
     if not add_playlist_media(DATABASE_PATH, playlist_id, media_id):
         abort(404)
+    sync_playlist_thumbnail(DATABASE_PATH, CACHE_DIR, playlist_id)
     target = request.form.get("next") or url_for("playlist_page", playlist_id=playlist_id)
     return redirect(target if target.startswith("/") and not target.startswith("//") else "/", code=303)
 
@@ -792,6 +871,7 @@ def add_to_playlist_page(playlist_id: int, media_id: int) -> Response:
 def remove_from_playlist_page(playlist_id: int, media_id: int) -> Response:
     if not remove_playlist_media(DATABASE_PATH, playlist_id, media_id):
         abort(404)
+    sync_playlist_thumbnail(DATABASE_PATH, CACHE_DIR, playlist_id)
     return redirect(url_for("playlist_page", playlist_id=playlist_id), code=303)
 
 
@@ -804,6 +884,7 @@ def move_playlist_video_page(playlist_id: int, media_id: int) -> Response:
         str(request.form.get("direction", "")),
     ):
         abort(404)
+    sync_playlist_thumbnail(DATABASE_PATH, CACHE_DIR, playlist_id)
     return redirect(url_for("playlist_page", playlist_id=playlist_id), code=303)
 
 
@@ -1152,6 +1233,11 @@ def refresh_video_page(media_id: int) -> Response:
         with YoutubeDL(options) as downloader:
             info = downloader.extract_info(video["webpage_url"] or video["source_url"], download=False)
         save_media(DATABASE_PATH, video["source_url"], info, file_path)
+        cache_video_thumbnail(
+            CACHE_DIR,
+            info.get("id") or video["video_id"],
+            info.get("thumbnail"),
+        )
     except Exception as exc:
         return render_template(
             "watch.html",
@@ -1176,6 +1262,7 @@ def delete_ignore_page(media_id: int) -> Response:
     if delete_media_and_ignore(DATABASE_PATH, media_id) is None:
         abort(404)
     delete_media_files(file_path)
+    delete_video_thumbnail(CACHE_DIR, video["video_id"])
     target = request.form.get("next") or url_for("home_page")
     if not target.startswith("/") or target.startswith("//"):
         target = url_for("home_page")
@@ -1240,6 +1327,20 @@ def media_api(media_id: int) -> Response:
     return send_file(file_path, conditional=True, max_age=3600)
 
 
+@APP.get("/cache/<path:filename>")
+def cache_file(filename: str) -> Response:
+    """Serve cached artwork from the same URL root as TubeArchivist."""
+    cache_root = CACHE_DIR.resolve()
+    path = (cache_root / filename).resolve()
+    try:
+        path.relative_to(cache_root)
+    except ValueError:
+        return jsonify({"error": "Artwork not found."}), 404
+    if not path.is_file():
+        return jsonify({"error": "Artwork not found."}), 404
+    return send_file(path, conditional=True, max_age=86400)
+
+
 @APP.get("/api/health")
 def health_api() -> Response:
     """Return a cheap container health signal."""
@@ -1278,7 +1379,9 @@ def not_found(_error: object) -> tuple[Response, int] | tuple[str, int]:
 def main() -> None:
     """Initialize storage, recover queue state, and run Flask."""
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     initialize_database(DATABASE_PATH)
+    migrate_storage_layout(DATABASE_PATH, DOWNLOAD_DIR, CACHE_DIR)
     recovered = recover_interrupted_downloads(DATABASE_PATH)
     if recovered:
         print(f"Requeued {recovered} interrupted download(s).", flush=True)

@@ -19,6 +19,11 @@ CREATE TABLE IF NOT EXISTS channels (
     name TEXT NOT NULL,
     source_url TEXT,
     thumbnail_url TEXT,
+    banner_url TEXT,
+    tvart_url TEXT,
+    description TEXT,
+    subscriber_count INTEGER NOT NULL DEFAULT 0,
+    tags_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(extractor, channel_id)
@@ -162,6 +167,18 @@ def initialize_database(database_path: Path) -> None:
         connection.execute(DOWNLOADS_SCHEMA)
         connection.execute(SETTINGS_SCHEMA)
         connection.execute(IGNORED_SCHEMA)
+        channel_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(channels)")
+        }
+        for definition in (
+            "banner_url TEXT",
+            "tvart_url TEXT",
+            "description TEXT",
+            "subscriber_count INTEGER NOT NULL DEFAULT 0",
+            "tags_json TEXT NOT NULL DEFAULT '[]'",
+        ):
+            if definition.split()[0] not in channel_columns:
+                connection.execute(f"ALTER TABLE channels ADD COLUMN {definition}")
         connection.executemany(
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
             DEFAULT_SETTINGS.items(),
@@ -303,6 +320,11 @@ def save_media(
     channel_name = info.get("channel") or info.get("uploader")
     channel_source_url = info.get("channel_url") or info.get("uploader_url")
     channel_thumbnail_url = info.get("channel_thumbnail")
+    channel_banner_url = info.get("channel_banner")
+    channel_tvart_url = info.get("channel_tvart")
+    channel_description = info.get("channel_description")
+    channel_subscriber_count = int(info.get("channel_follower_count") or 0)
+    channel_tags_json = json.dumps(info.get("channel_tags") or [])
 
     with connect(database_path) as connection:
         channel_db_id = None
@@ -310,14 +332,20 @@ def save_media(
             connection.execute(
                 """
                 INSERT INTO channels (
-                    extractor, channel_id, name, source_url, thumbnail_url
-                ) VALUES (?, ?, ?, ?, ?)
+                    extractor, channel_id, name, source_url, thumbnail_url,
+                    banner_url, tvart_url, description, subscriber_count, tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(extractor, channel_id) DO UPDATE SET
                     name=excluded.name,
                     source_url=COALESCE(excluded.source_url, channels.source_url),
                     thumbnail_url=COALESCE(
                         excluded.thumbnail_url, channels.thumbnail_url
                     ),
+                    banner_url=COALESCE(excluded.banner_url, channels.banner_url),
+                    tvart_url=COALESCE(excluded.tvart_url, channels.tvart_url),
+                    description=COALESCE(excluded.description, channels.description),
+                    subscriber_count=MAX(excluded.subscriber_count, channels.subscriber_count),
+                    tags_json=CASE WHEN excluded.tags_json='[]' THEN channels.tags_json ELSE excluded.tags_json END,
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (
@@ -326,6 +354,11 @@ def save_media(
                     str(channel_name or channel_id),
                     channel_source_url,
                     channel_thumbnail_url,
+                    channel_banner_url,
+                    channel_tvart_url,
+                    channel_description,
+                    channel_subscriber_count,
+                    channel_tags_json,
                 ),
             )
             channel_row = connection.execute(
@@ -1001,6 +1034,45 @@ def cancel_download(database_path: Path, download_id: int) -> bool:
               AND status IN ('queued', 'downloading')
             """,
             (download_id,),
+        )
+    return cursor.rowcount == 1
+
+
+def update_channel_art(
+    database_path: Path,
+    channel_id: int,
+    *,
+    thumbnail_url: str | None,
+    banner_url: str | None,
+    tvart_url: str | None,
+    description: str | None = None,
+    subscriber_count: int = 0,
+    tags: list | None = None,
+) -> bool:
+    """Persist the source artwork metadata needed to rebuild the cache."""
+    with connect(database_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE channels SET
+                thumbnail_url=COALESCE(?,thumbnail_url),
+                banner_url=COALESCE(?,banner_url),
+                tvart_url=COALESCE(?,tvart_url),
+                description=COALESCE(?,description),
+                subscriber_count=MAX(?,subscriber_count),
+                tags_json=CASE WHEN ?='[]' THEN tags_json ELSE ? END,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (
+                thumbnail_url,
+                banner_url,
+                tvart_url,
+                description,
+                int(subscriber_count or 0),
+                json.dumps(tags or []),
+                json.dumps(tags or []),
+                channel_id,
+            ),
         )
     return cursor.rowcount == 1
 

@@ -3,8 +3,9 @@
 {% block content %}
   <div class="page-heading">
     <div style="display:flex;align-items:center;gap:18px">
-      {% if channel.thumbnail_url %}
-        <img class="channel-avatar" src="{{ channel.thumbnail_url }}" alt="{{ channel.name }} channel thumbnail" referrerpolicy="no-referrer">
+      {% set thumb_url = channel_art_url(channel.channel_id, 'thumb') %}
+      {% if thumb_url %}
+        <img class="channel-avatar" src="{{ thumb_url }}" alt="{{ channel.name }} channel thumbnail">
       {% else %}
         <div class="channel-avatar">{{ channel.name[:1]|upper }}</div>
       {% endif %}

@@ -1,3 +1,4 @@
 Flask>=3.1,<4
 waitress>=3.0,<4
 yt-dlp==2026.7.4
+Pillow==12.3.0

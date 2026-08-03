@@ -38,6 +38,15 @@ from library import (
     update_media_progress,
     update_settings,
 )
+from storage import (
+    channel_art_relative_path,
+    delete_channel_art,
+    delete_playlist_thumbnail,
+    delete_video_thumbnail,
+    playlist_thumb_relative_path,
+    sync_playlist_thumbnail,
+    video_thumb_relative_path,
+)
 
 
 TA_VERSION = "v0.5.10"
@@ -76,6 +85,14 @@ def _download_dir() -> Path:
 
 def _snapshot_dir() -> Path:
     return _app_module().SNAPSHOT_DIR
+
+
+def _cache_dir() -> Path:
+    return _app_module().CACHE_DIR
+
+
+def _cache_url(relative: Path) -> str | None:
+    return f"/cache/{relative.as_posix()}" if (_cache_dir() / relative).is_file() else None
 
 
 def _error(message: str, status: int = 400):
@@ -259,19 +276,23 @@ def _channel_json(row) -> dict:
         overwrites = json.loads(_setting(f"channel_overwrites:{channel_id}", "{}"))
     except json.JSONDecodeError:
         overwrites = {}
+    try:
+        channel_tags = json.loads(row.get("tags_json") or "[]")
+    except json.JSONDecodeError:
+        channel_tags = []
     return {
         "channel_id": channel_id,
         "channel_active": True,
-        "channel_banner_url": None,
-        "channel_thumb_url": row.get("thumbnail_url"),
-        "channel_tvart_url": None,
+        "channel_banner_url": _cache_url(channel_art_relative_path(channel_id, "banner")) if row.get("banner_url") else None,
+        "channel_thumb_url": _cache_url(channel_art_relative_path(channel_id, "thumb")) if row.get("thumbnail_url") else None,
+        "channel_tvart_url": _cache_url(channel_art_relative_path(channel_id, "tvart")) if row.get("tvart_url") else None,
         "channel_description": row.get("description"),
         "channel_last_refresh": str(row.get("updated_at") or ""),
         "channel_name": str(row.get("name") or row.get("channel") or "Unknown channel"),
         "channel_overwrites": overwrites,
         "channel_subs": int(row.get("subscriber_count") or 0),
         "channel_subscribed": _channel_subscribed(str(row.get("channel_id") or "")),
-        "channel_tags": [],
+        "channel_tags": channel_tags,
         "channel_tabs": ["videos", "shorts", "streams"],
     }
 
@@ -283,6 +304,11 @@ def _media_channel(row) -> dict:
             "channel_id": row.get("channel_id"),
             "name": row.get("channel"),
             "thumbnail_url": row.get("channel_thumbnail_url"),
+            "banner_url": row.get("channel_banner_url"),
+            "tvart_url": row.get("channel_tvart_url"),
+            "description": row.get("channel_description"),
+            "subscriber_count": row.get("channel_subscriber_count"),
+            "tags_json": row.get("channel_tags_json"),
             "updated_at": row.get("updated_at"),
         }
     )
@@ -330,7 +356,7 @@ def _subtitle_items(row) -> list[dict]:
             {
                 "ext": "vtt",
                 "lang": lang,
-                "media_url": f"{row.get('channel_id') or 'unknown'}/{sidecar.name}",
+                "media_url": f"/youtube/{row.get('channel_id') or 'unknown'}/{sidecar.name}",
                 "name": lang,
                 "source": "auto",
                 "url": None,
@@ -393,7 +419,7 @@ def _video_json(row) -> dict:
         "date_downloaded": _epoch(row.get("downloaded_at")),
         "description": row.get("description"),
         "media_size": int(row.get("file_size") or 0),
-        "media_url": f"{row.get('channel_id') or 'unknown'}/{Path(row['file_path']).name}",
+        "media_url": f"/youtube/{row.get('channel_id') or 'unknown'}/{Path(row['file_path']).name}",
         "player": player,
         "playlist": playlists,
         "published": row.get("upload_date") or "",
@@ -408,7 +434,7 @@ def _video_json(row) -> dict:
         "tags": tags,
         "title": row["title"],
         "vid_last_refresh": str(row.get("updated_at") or ""),
-        "vid_thumb_url": row.get("thumbnail_url") or "",
+        "vid_thumb_url": _cache_url(video_thumb_relative_path(row["video_id"])) or "",
         "vid_type": VIDEO_TYPES.get(row.get("video_type"), "videos"),
         "youtube_id": row["video_id"],
     }
@@ -417,6 +443,11 @@ def _video_json(row) -> dict:
 
 MEDIA_SELECT = """
 SELECT m.*, c.thumbnail_url AS channel_thumbnail_url,
+       c.banner_url AS channel_banner_url,
+       c.tvart_url AS channel_tvart_url,
+       c.description AS channel_description,
+       c.subscriber_count AS channel_subscriber_count,
+       c.tags_json AS channel_tags_json,
        GROUP_CONCAT(DISTINCT mt.tag) AS tags,
        GROUP_CONCAT(DISTINCT p.playlist_id) AS playlist_ids
 FROM media m
@@ -509,7 +540,7 @@ def _playlist_json(row) -> dict:
         "playlist_name": row["name"],
         "playlist_subscribed": _playlist_subscribed(row["playlist_id"]),
         "playlist_sort_order": row.get("playlist_sort_order") or "top",
-        "playlist_thumbnail": row.get("thumbnail_url") or "",
+        "playlist_thumbnail": _cache_url(playlist_thumb_relative_path(row["playlist_id"])) or "",
         "playlist_type": "custom" if row.get("custom") else "regular",
     }
 
@@ -539,7 +570,7 @@ def _download_item_from_row(row, status="pending") -> dict:
         "status": status,
         "timestamp": _epoch(row.get("created_at") or row.get("ignored_at")) or None,
         "title": str(row.get("title") or video_id),
-        "vid_thumb_url": row.get("thumbnail_url") or metadata.get("thumbnail"),
+        "vid_thumb_url": _cache_url(video_thumb_relative_path(video_id)),
         "vid_type": VIDEO_TYPES.get(row.get("video_type"), "videos"),
         "youtube_id": video_id,
     }
@@ -576,6 +607,7 @@ def _delete_media_file(row) -> None:
     except ValueError:
         return
     _app_module().delete_media_files(path)
+    delete_video_thumbnail(_cache_dir(), row["video_id"])
 
 
 def _app_config() -> dict:
@@ -821,6 +853,7 @@ def register_ta_api(app) -> None:
             videos = connection.execute("SELECT * FROM media WHERE channel_db_id=?", (row["id"],)).fetchall()
         for video in videos: _delete_media_file(dict(video))
         with connect(_database_path()) as connection: connection.execute("DELETE FROM media WHERE channel_db_id=?", (row["id"],)); connection.execute("DELETE FROM channels WHERE id=?", (row["id"],))
+        delete_channel_art(_cache_dir(), channel_id)
         return Response(status=204)
 
     @app.get("/api/channel/<channel_id>/aggs/")
@@ -865,7 +898,9 @@ def register_ta_api(app) -> None:
     def ta_playlist_custom_create():
         data = _json_object() or {}
         if not data.get("playlist_name"): return _error("playlist_name is required")
-        row = create_playlist(_database_path(), str(data["playlist_name"])); return jsonify(_playlist_json(row))
+        row = create_playlist(_database_path(), str(data["playlist_name"]))
+        sync_playlist_thumbnail(_database_path(), _cache_dir(), row["id"])
+        return jsonify(_playlist_json(row))
 
     @app.post("/api/playlist/custom/<playlist_id>/")
     def ta_playlist_custom_update(playlist_id):
@@ -882,6 +917,7 @@ def register_ta_api(app) -> None:
             with connect(_database_path()) as connection:
                 position = -1 if action=="top" else 2147483647
                 connection.execute("UPDATE playlist_media SET position=? WHERE playlist_id=? AND media_id=?",(position,row["id"],video["id"]))
+        sync_playlist_thumbnail(_database_path(), _cache_dir(), row["id"])
         return jsonify(_playlist_json(_playlist_row(playlist_id)))
 
     @app.route("/api/playlist/<playlist_id>/", methods=["GET", "POST", "DELETE"])
@@ -905,6 +941,7 @@ def register_ta_api(app) -> None:
                 for video in list_playlist_media(_database_path(),row["id"]): _delete_media_file(video)
                 with connect(_database_path()) as connection: connection.execute("DELETE FROM media WHERE id IN (SELECT media_id FROM playlist_media WHERE playlist_id=?)",(row["id"],))
             delete_playlist(_database_path(),row["id"])
+            delete_playlist_thumbnail(_cache_dir(), playlist_id)
         return Response(status=204)
 
     @app.route("/api/download/", methods=["GET","POST","PATCH","DELETE"])
@@ -1390,6 +1427,7 @@ filter.addEventListener('input',render);fetch('/api/schema/').then(response=>res
 </script>
 </body></html>""",version=TA_VERSION)
 
+    @app.get("/youtube/<channel_id>/<path:filename>")
     @app.get("/media/<channel_id>/<path:filename>")
     def ta_media_file(channel_id,filename):
         with connect(_database_path()) as connection:

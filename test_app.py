@@ -5,6 +5,7 @@ import unittest
 import io
 from pathlib import Path
 from unittest.mock import patch
+from PIL import Image
 
 from app import (
     APP,
@@ -64,6 +65,17 @@ from library import (
     set_media_watched,
     update_media_progress,
     update_settings,
+)
+from storage import (
+    archive_download,
+    cache_channel_art,
+    cache_playlist_thumbnail,
+    cache_video_thumbnail,
+    channel_art_relative_path,
+    media_relative_path,
+    migrate_storage_layout,
+    playlist_thumb_relative_path,
+    video_thumb_relative_path,
 )
 
 
@@ -529,6 +541,7 @@ class SettingsTests(unittest.TestCase):
             root = Path(temporary_directory)
             database_path = root / "library.db"
             download_dir = root / "downloads"
+            cache_dir = root / "cache"
             cookie_path = root / "cookies.txt"
             download_dir.mkdir()
             cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
@@ -550,22 +563,24 @@ class SettingsTests(unittest.TestCase):
             with (
                 patch("app.DATABASE_PATH", database_path),
                 patch("app.DOWNLOAD_DIR", download_dir),
+                patch("app.CACHE_DIR", cache_dir),
             ):
                 options = yt_dlp_download_options(1, {})
 
             self.assertIn("height<=480", options["format"])
             self.assertEqual(options["subtitleslangs"], ["en", "fr"])
-            self.assertTrue(options["writeinfojson"])
+            self.assertNotIn("writeinfojson", options)
             self.assertTrue(options["getcomments"])
             self.assertEqual(options["ratelimit"], 64 * 1024)
             self.assertEqual(options["cookiefile"], str(cookie_path))
             self.assertEqual(
-                options["postprocessors"][0]["categories"],
+                options["postprocessors"][1]["categories"],
                 ["sponsor", "selfpromo"],
             )
+            self.assertEqual(options["postprocessors"][0]["key"], "FFmpegMetadata")
             self.assertEqual(
                 options["outtmpl"],
-                str(download_dir / "%(title)s [%(id)s].%(ext)s"),
+                str(cache_dir / "download" / "%(id)s.mp4"),
             )
 
     def test_defaults_validation_and_quality_formats(self):
@@ -1010,6 +1025,95 @@ class FlaskEndpointTests(unittest.TestCase):
                 self.assertEqual(client.get("/api/media/999").status_code, 404)
 
 
+class StorageLayoutTests(unittest.TestCase):
+    def test_tubearchivist_paths_and_cached_jpegs(self):
+        self.assertEqual(
+            media_relative_path("UC-channel", "video_ID"),
+            Path("UC-channel/video_ID.mp4"),
+        )
+        self.assertEqual(
+            video_thumb_relative_path("Abc123"), Path("videos/a/Abc123.jpg")
+        )
+        self.assertEqual(
+            channel_art_relative_path("UC-channel", "thumb"),
+            Path("channels/UC-channel_thumb.jpg"),
+        )
+        self.assertEqual(
+            playlist_thumb_relative_path("PL-list"),
+            Path("playlists/PL-list.jpg"),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache_dir = root / "cache"
+            source = root / "source.png"
+            Image.new("RGB", (400, 400), "red").save(source)
+            video = cache_video_thumbnail(cache_dir, "Abc123", source)
+            playlist = cache_playlist_thumbnail(cache_dir, "PL-list", source)
+            channel = cache_channel_art(
+                cache_dir, "UC-channel", source, source, source
+            )
+            with Image.open(video) as image:
+                self.assertEqual(image.format, "JPEG")
+                # Match TubeArchivist's float crop coordinates exactly.
+                self.assertEqual(image.size, (400, 224))
+            with Image.open(playlist) as image:
+                self.assertEqual(image.size, (336, 189))
+            self.assertTrue(channel["thumb"].is_file())
+            self.assertTrue(channel["banner"].is_file())
+            self.assertTrue(channel["tvart"].is_file())
+
+    def test_legacy_media_migration_moves_media_and_sidecars(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "data" / "library.db"
+            media_dir = root / "youtube"
+            cache_dir = root / "cache"
+            media_dir.mkdir()
+            old_media = media_dir / "Legacy title [legacy-id].mp4"
+            old_subtitle = media_dir / "Legacy title [legacy-id].en.vtt"
+            old_media.write_bytes(b"media")
+            old_subtitle.write_text("WEBVTT", encoding="utf-8")
+            initialize_database(database_path)
+            media_id = save_media(
+                database_path,
+                "https://www.youtube.com/watch?v=legacy-id",
+                {
+                    "id": "legacy-id",
+                    "extractor_key": "Youtube",
+                    "title": "Legacy title",
+                    "channel": "Legacy channel",
+                    "channel_id": "UC-legacy",
+                },
+                old_media,
+            )
+            result = migrate_storage_layout(database_path, media_dir, cache_dir)
+            target = media_dir / "UC-legacy" / "legacy-id.mp4"
+            self.assertEqual(result, {"moved": 1, "missing": 0})
+            self.assertTrue(target.is_file())
+            self.assertTrue((target.parent / "legacy-id.en.vtt").is_file())
+            self.assertFalse(old_media.exists())
+            self.assertEqual(get_media(database_path, media_id)["file_path"], str(target.resolve()))
+            self.assertEqual(
+                migrate_storage_layout(database_path, media_dir, cache_dir),
+                {"moved": 0, "missing": 0},
+            )
+
+    def test_cache_route_serves_only_cached_artwork(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_dir = Path(temporary_directory)
+            source = cache_dir / "source.png"
+            Image.new("RGB", (320, 180), "blue").save(source)
+            target = cache_video_thumbnail(cache_dir, "route-id", source)
+            with patch("app.CACHE_DIR", cache_dir):
+                client = APP.test_client()
+                response = client.get("/cache/videos/r/route-id.jpg")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.mimetype, "image/jpeg")
+                response.close()
+                self.assertEqual(client.get("/cache/../source.png").status_code, 404)
+            self.assertTrue(target.is_file())
+
+
 class TubeArchivistApiCompatibilityTests(unittest.TestCase):
     """Exercise the public TubeArchivist v0.5.10 API contract end to end."""
 
@@ -1019,6 +1123,7 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
         self.database_path = self.root / "data" / "library.db"
         self.download_dir = self.root / "downloads"
         self.snapshot_dir = self.root / "snapshots"
+        self.cache_dir = self.root / "cache"
         self.download_dir.mkdir()
         initialize_database(self.database_path)
         initialize_features(self.database_path)
@@ -1026,7 +1131,8 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
             self.database_path,
             {"cookie_path": str(self.root / "cookies.txt"), "page_size": 24},
         )
-        self.video_path = self.download_dir / "API video [api-video].mp4"
+        (self.download_dir / "api-channel").mkdir()
+        self.video_path = self.download_dir / "api-channel" / "api-video.mp4"
         self.video_path.write_bytes(b"api-video-data")
         self.media_id = save_media(
             self.database_path,
@@ -1055,6 +1161,19 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
         set_media_tags(self.database_path, self.media_id, "contract, api")
         self.playlist = create_playlist(self.database_path, "API playlist")
         add_playlist_media(self.database_path, self.playlist["id"], self.media_id)
+        artwork_source = self.root / "artwork.png"
+        Image.new("RGB", (320, 180), "green").save(artwork_source)
+        cache_video_thumbnail(self.cache_dir, "api-video", artwork_source)
+        cache_channel_art(
+            self.cache_dir,
+            "api-channel",
+            artwork_source,
+            artwork_source,
+            artwork_source,
+        )
+        cache_playlist_thumbnail(
+            self.cache_dir, self.playlist["playlist_id"], artwork_source
+        )
         enqueue_download(
             self.database_path,
             "https://www.youtube.com/watch?v=queued-video",
@@ -1071,6 +1190,7 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
             patch("app.DATABASE_PATH", self.database_path),
             patch("app.DOWNLOAD_DIR", self.download_dir),
             patch("app.SNAPSHOT_DIR", self.snapshot_dir),
+            patch("app.CACHE_DIR", self.cache_dir),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -1168,6 +1288,14 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
         video_payload = videos.get_json()
         self.assertEqual(set(video_payload), {"data", "paginate"})
         self.assertEqual(video_payload["data"][0]["youtube_id"], "api-video")
+        self.assertEqual(
+            video_payload["data"][0]["media_url"],
+            "/youtube/api-channel/api-video.mp4",
+        )
+        self.assertEqual(
+            video_payload["data"][0]["vid_thumb_url"],
+            "/cache/videos/a/api-video.jpg",
+        )
         self.assertTrue(
             {"active", "channel", "media_url", "player", "stats", "streams", "tags"}
             <= set(video_payload["data"][0])
@@ -1196,7 +1324,7 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
                 self.assert_success(self.client.get(path))
 
         media = self.client.get(
-            f"/media/api-channel/{self.video_path.name}",
+            f"/youtube/api-channel/{self.video_path.name}",
             headers={"Range": "bytes=0-2"},
         )
         self.assertEqual(media.status_code, 206)

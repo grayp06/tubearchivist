@@ -11,7 +11,8 @@
   <section class="channel-grid">
     {% for playlist in playlists %}
       <article class="channel-card">
-        {% if playlist.display_thumbnail %}<img class="channel-avatar" src="{{ playlist.display_thumbnail }}" alt="" loading="lazy">{% else %}<div class="channel-avatar">▶</div>{% endif %}
+        {% set thumb_url = playlist_thumbnail_url(playlist.playlist_id) %}
+        {% if thumb_url %}<img class="channel-avatar" src="{{ thumb_url }}" alt="" loading="lazy">{% else %}<div class="channel-avatar">▶</div>{% endif %}
         <div><h2><a href="{{ url_for('playlist_page', playlist_id=playlist.id) }}">{{ playlist.name }}</a></h2><p>{{ playlist.video_count }} videos · {{ playlist.total_duration|duration }}</p><p>{{ 'Custom' if playlist.custom else playlist.extractor }}</p></div>
       </article>
     {% else %}<div class="empty">No playlists yet. Download a YouTube playlist or create one above.</div>{% endfor %}

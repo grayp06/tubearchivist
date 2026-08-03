@@ -14,7 +14,7 @@ The archive includes:
 - metadata, description, tag, ID, channel, and downloaded-subtitle search;
 - local playback, event-driven progress saving, and 95% watched detection;
 - individual/bulk cancellation, priority, retry, ignore, and delete-and-ignore;
-- 480p through 4K/best quality controls, rate limiting, subtitles, info JSON,
+- 480p through 4K/best quality controls, rate limiting, subtitles, embedded metadata,
   cookies, optional comments, and SponsorBlock removal;
 - archive statistics, download-folder reconciliation, SQLite snapshots, JSON
   export, and OPML subscription import/export.
@@ -66,11 +66,28 @@ separate high-resolution video and audio streams.
 docker compose up -d --build
 ```
 
-Open <http://localhost:8088>. Downloaded files are written to `./downloads` and
-the SQLite database is stored at `./data/library.db`. SQLite snapshots are
+Open <http://localhost:8088>. The host's `./downloads` directory is mounted as
+TubeArchivist's `/youtube` media volume, while `./cache` is mounted at `/cache`
+for artwork and temporary downloads. The SQLite database is stored at
+`./data/library.db`. SQLite snapshots are
 stored under `./data/snapshots`. Saved videos appear in
 the Home page and can be played with seeking. Queue status never polls: use the
 Refresh status link on the Downloads page when you want an update.
 
 Only expose this container on localhost. This version intentionally has no
 authentication.
+
+## Storage compatibility
+
+The container uses TubeArchivist v0.5.10's exact relative layout:
+
+- `/youtube/<channel-id>/<video-id>.mp4`
+- `/youtube/<channel-id>/<video-id>.<language>.vtt`
+- `/cache/download/<video-id>.mp4` while downloading
+- `/cache/videos/<first-id-character>/<video-id>.jpg`
+- `/cache/channels/<channel-id>_thumb.jpg`, `_banner.jpg`, and `_tvart.jpg`
+- `/cache/playlists/<playlist-id>.jpg`
+
+On startup, legacy flat files are moved into their channel directory and their
+SQLite `file_path` values are updated. The migration is idempotent and retains
+same-stem subtitle and info-JSON sidecars.

@@ -3,3 +3,5 @@ downloads/*
 !downloads/.gitkeep
 data/*
 !data/.gitkeep
+cache/*
+!cache/.gitkeep
