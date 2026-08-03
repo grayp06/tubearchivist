@@ -47,7 +47,7 @@
   <section class="download-list" aria-label="Queued downloads">
     {% for item in queued %}
       <article class="download-row">
-        <div><strong>{{ item.title or item.source_url }}</strong><div class="download-meta"><span class="source-kind">{{ item.kind }}</span><span>Position {{ item.queue_position }}</span><span>Added {{ item.created_at }}</span>{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}</div></div>
+        <div><strong>{{ item.title or item.source_url }}</strong><div class="download-meta"><span class="source-kind">{{ item.kind }}</span><span>Position {{ item.queue_position }}</span><span>Added {{ item.created_at }}</span>{% if item.available_at %}<span>Available {{ item.available_at }} UTC</span>{% endif %}{% if item.parent_id %}<span>From {{ item.parent_title or ('collection #' ~ item.parent_id) }}</span>{% endif %}</div></div>
         <div class="queue-actions">
           <span class="status queued">Queued</span>
           {% if item.kind == 'video' %}

@@ -47,6 +47,7 @@ from library import (
     add_ignored,
     cancel_download,
     claim_next_download,
+    connect,
     delete_media,
     delete_media_and_ignore,
     enqueue_collection_items,
@@ -63,6 +64,7 @@ from library import (
     recover_interrupted_downloads,
     remove_ignored,
     save_media,
+    seconds_until_next_download,
     set_media_watched,
     update_media_progress,
     update_settings,
@@ -525,6 +527,65 @@ class DownloadQueueTests(unittest.TestCase):
             self.assertEqual(parent_row["item_count"], 2)
             self.assertEqual([item["title"] for item in children], ["One", "Two"])
 
+    def test_subscription_rescan_defers_only_discovered_video_downloads(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "library.db"
+            initialize_database(database_path)
+            update_settings(database_path, {"subscription_download_delay": 120})
+            subscription = add_subscription(
+                database_path,
+                "https://www.youtube.com/@delayed/videos",
+                "channel",
+                "Delayed channel",
+            )
+            self.assertEqual(queue_subscription_scan(database_path), 1)
+            parent = claim_next_download(database_path)
+            self.assertEqual(parent["subscription_id"], subscription["id"])
+            with patch("app.DATABASE_PATH", database_path):
+                expand_collection(
+                    parent,
+                    {
+                        "_type": "playlist",
+                        "title": "Delayed channel - Videos",
+                        "entries": [
+                            {
+                                "id": "delayed-video",
+                                "title": "Delayed video",
+                                "extractor_key": "Youtube",
+                            }
+                        ],
+                    },
+                )
+
+            child = next(
+                item
+                for item in list_downloads(database_path)
+                if item["parent_id"] == parent["id"]
+            )
+            self.assertEqual(child["subscription_id"], subscription["id"])
+            self.assertIsNotNone(child["available_at"])
+            wait_seconds = seconds_until_next_download(database_path)
+            self.assertGreater(wait_seconds, 0)
+            self.assertLessEqual(wait_seconds, 120)
+            self.assertIsNone(claim_next_download(database_path))
+
+            manual = enqueue_download(
+                database_path,
+                "https://youtu.be/manual-now",
+                kind="video",
+            )
+            self.assertEqual(claim_next_download(database_path)["id"], manual["id"])
+            with connect(database_path) as connection:
+                connection.execute(
+                    "UPDATE downloads SET status='complete' WHERE id=?",
+                    (manual["id"],),
+                )
+                connection.execute(
+                    "UPDATE downloads SET available_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (child["id"],),
+                )
+            self.assertEqual(claim_next_download(database_path)["id"], child["id"])
+
     def test_collection_expansion_respects_persistent_limit(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "library.db"
@@ -622,6 +683,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(defaults["collection_limit"], 100)
             self.assertEqual(defaults["download_quality"], "1080")
             self.assertEqual(defaults["page_size"], 24)
+            self.assertEqual(defaults["subscription_download_delay"], 60)
             self.assertTrue(defaults["write_info_json"])
             update_settings(
                 database_path,
@@ -1033,18 +1095,33 @@ class FlaskEndpointTests(unittest.TestCase):
                 client = APP.test_client()
                 response = client.post(
                     "/settings",
-                    data={"collection_limit": "75", "download_quality": "1440"},
+                    data={
+                        "collection_limit": "75",
+                        "download_quality": "1440",
+                        "subscription_download_delay": "300",
+                    },
                 )
                 self.assertEqual(response.status_code, 303)
                 saved = get_settings(database_path)
                 self.assertEqual(saved["collection_limit"], 75)
                 self.assertEqual(saved["download_quality"], "1440")
+                self.assertEqual(saved["subscription_download_delay"], 300)
                 invalid = client.post(
                     "/settings",
                     data={"collection_limit": "10001", "download_quality": "1080"},
                 )
                 self.assertEqual(invalid.status_code, 400)
                 self.assertIn(b"between 1 and 10,000", invalid.data)
+                invalid_delay = client.post(
+                    "/settings",
+                    data={
+                        "collection_limit": "100",
+                        "download_quality": "1080",
+                        "subscription_download_delay": "86401",
+                    },
+                )
+                self.assertEqual(invalid_delay.status_code, 400)
+                self.assertIn(b"between 0 and 86,400 seconds", invalid_delay.data)
 
     def test_channel_page_filters_videos_and_progress_api_persists(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1483,10 +1560,25 @@ class TubeArchivistApiCompatibilityTests(unittest.TestCase):
 
         config = self.client.post(
             "/api/appsettings/config/",
-            json={"subscriptions": {"channel_size": 50}, "downloads": {"add_metadata": False}},
+            json={
+                "subscriptions": {"channel_size": 50},
+                "downloads": {"add_metadata": False, "sleep_interval": 15},
+            },
         )
         self.assertEqual(config.get_json()["subscriptions"]["channel_size"], 50)
+        self.assertEqual(config.get_json()["downloads"]["sleep_interval"], 15)
         self.assertEqual(get_settings(self.database_path)["collection_limit"], 50)
+        self.assertEqual(
+            get_settings(self.database_path)["subscription_download_delay"], 15
+        )
+        invalid_sleep = self.client.post(
+            "/api/appsettings/config/",
+            json={"downloads": {"sleep_interval": -1}},
+        )
+        self.assertEqual(invalid_sleep.status_code, 400)
+        self.assertEqual(
+            get_settings(self.database_path)["subscription_download_delay"], 15
+        )
         self.assert_success(
             self.client.put(
                 "/api/appsettings/cookie/",

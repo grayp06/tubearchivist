@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
     priority INTEGER NOT NULL DEFAULT 0,
     playlist_db_id INTEGER REFERENCES playlists(id),
+    subscription_id INTEGER,
+    available_at TEXT,
     error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TEXT,
@@ -116,6 +118,7 @@ DEFAULT_SETTINGS = {
     "sponsorblock_categories": "",
     "cookie_path": "/data/cookies.txt",
     "rate_limit": "",
+    "subscription_download_delay": "60",
     "output_template": "%(title).180B [%(id)s].%(ext)s",
     "download_comments": "0",
 }
@@ -200,6 +203,10 @@ def initialize_database(database_path: Path) -> None:
             )
         if "item_count" not in download_columns:
             connection.execute("ALTER TABLE downloads ADD COLUMN item_count INTEGER")
+        if "subscription_id" not in download_columns:
+            connection.execute("ALTER TABLE downloads ADD COLUMN subscription_id INTEGER")
+        if "available_at" not in download_columns:
+            connection.execute("ALTER TABLE downloads ADD COLUMN available_at TEXT")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_media_downloaded ON media(downloaded_at DESC)"
         )
@@ -208,6 +215,9 @@ def initialize_database(database_path: Path) -> None:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_downloads_queue ON downloads(status, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_downloads_ready ON downloads(status, available_at, priority, id)"
         )
         connection.execute(
             """
@@ -519,6 +529,12 @@ def get_settings(database_path: Path) -> dict:
         ),
         "cookie_path": values.get("cookie_path", DEFAULT_SETTINGS["cookie_path"]),
         "rate_limit": values.get("rate_limit", DEFAULT_SETTINGS["rate_limit"]),
+        "subscription_download_delay": int(
+            values.get(
+                "subscription_download_delay",
+                DEFAULT_SETTINGS["subscription_download_delay"],
+            )
+        ),
         "output_template": values.get(
             "output_template", DEFAULT_SETTINGS["output_template"]
         ),
@@ -916,6 +932,8 @@ def enqueue_collection_items(
     database_path: Path,
     parent_id: int,
     items: list[dict],
+    *,
+    defer_seconds: int = 0,
 ) -> int:
     """Append a batch of unique, not-yet-archived collection videos."""
     inserted = 0
@@ -975,14 +993,24 @@ def enqueue_collection_items(
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO downloads (
-                    source_url, kind, parent_id, source_position, title
-                ) VALUES (?, 'video', ?, ?, ?)
+                    source_url, kind, parent_id, source_position, title,
+                    subscription_id, available_at
+                ) VALUES (
+                    ?, 'video', ?, ?, ?,
+                    (SELECT subscription_id FROM downloads WHERE id=?),
+                    CASE WHEN ? > 0
+                         THEN datetime('now', '+' || ? || ' seconds')
+                         ELSE NULL END
+                )
                 """,
                 (
                     source_url,
                     parent_id,
                     item.get("source_position"),
                     item.get("title"),
+                    parent_id,
+                    defer_seconds,
+                    defer_seconds,
                 ),
             )
             inserted += cursor.rowcount
@@ -1000,7 +1028,7 @@ def count_collection_items(database_path: Path, parent_id: int) -> int:
 
 
 def claim_next_download(database_path: Path) -> dict | None:
-    """Atomically claim the oldest row only when no other row is active."""
+    """Atomically claim the oldest eligible row when no other row is active."""
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         active = connection.execute(
@@ -1009,7 +1037,13 @@ def claim_next_download(database_path: Path) -> dict | None:
         if active is not None:
             return None
         row = connection.execute(
-            "SELECT * FROM downloads WHERE status='queued' ORDER BY priority DESC, id LIMIT 1"
+            """
+            SELECT * FROM downloads
+            WHERE status='queued'
+              AND (available_at IS NULL OR available_at <= CURRENT_TIMESTAMP)
+            ORDER BY priority DESC, id
+            LIMIT 1
+            """
         ).fetchone()
         if row is None:
             return None
@@ -1027,6 +1061,24 @@ def claim_next_download(database_path: Path) -> dict | None:
             (row["id"],),
         ).fetchone()
     return dict(claimed)
+
+
+def seconds_until_next_download(database_path: Path) -> float | None:
+    """Return the one-shot wait until the next deferred queued row is eligible."""
+    with connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT MIN(
+                CAST(strftime('%s', available_at) AS INTEGER)
+                - CAST(strftime('%s', 'now') AS INTEGER)
+            ) AS seconds
+            FROM downloads
+            WHERE status='queued' AND available_at > CURRENT_TIMESTAMP
+            """
+        ).fetchone()
+    if row is None or row["seconds"] is None:
+        return None
+    return max(0.0, float(row["seconds"]))
 
 
 def get_download(database_path: Path, download_id: int) -> dict | None:

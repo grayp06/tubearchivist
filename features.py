@@ -177,10 +177,10 @@ def queue_subscription_scan(database_path: Path) -> int:
                 continue
             connection.execute(
                 """
-                INSERT INTO downloads (source_url, kind, title)
-                VALUES (?, ?, ?)
+                INSERT INTO downloads (source_url, kind, title, subscription_id)
+                VALUES (?, ?, ?, ?)
                 """,
-                (item["source_url"], item["kind"], item["name"]),
+                (item["source_url"], item["kind"], item["name"], item["id"]),
             )
             connection.execute(
                 "UPDATE subscriptions SET last_scanned_at=CURRENT_TIMESTAMP WHERE id=?",

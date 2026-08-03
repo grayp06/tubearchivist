@@ -18,6 +18,11 @@
     <div class="settings-field"><label><input name="write_info_json" type="checkbox" value="1" {% if settings.write_info_json %}checked{% endif %}> Embed metadata in downloaded MP4 files</label><p class="settings-help">Matches TubeArchivist's add-metadata option without creating extra info JSON sidecars.</p></div>
     <div class="settings-field"><label for="sponsorblock">SponsorBlock categories to remove</label><input id="sponsorblock" name="sponsorblock_categories" value="{{ settings.sponsorblock_categories }}" placeholder="sponsor, selfpromo"><p class="settings-help">Leave blank to disable. Categories are passed to yt-dlp's built-in SponsorBlock postprocessors.</p></div>
     <div class="settings-field"><label for="rate-limit">Download rate limit (KiB/s)</label><input id="rate-limit" name="rate_limit" inputmode="numeric" value="{{ settings.rate_limit }}" placeholder="Blank for unlimited"></div>
+    <div class="settings-field">
+      <label for="subscription-download-delay">Wait after subscription rescan (seconds)</label>
+      <input id="subscription-download-delay" name="subscription_download_delay" type="number" min="0" max="86400" step="1" required value="{{ settings.subscription_download_delay }}">
+      <p class="settings-help">Videos discovered by a subscription rescan remain queued for this long before downloads begin. Manual downloads are not delayed. Set to 0 to start immediately.</p>
+    </div>
     <div class="settings-field"><strong>TubeArchivist storage layout</strong><p class="settings-help">Media filenames are fixed as <code>/youtube/&lt;channel-id&gt;/&lt;video-id&gt;.mp4</code>. Artwork is cached under <code>/cache/videos</code>, <code>/cache/channels</code>, and <code>/cache/playlists</code>.</p></div>
     <div class="settings-field"><label for="cookie-path">Cookie file path</label><input id="cookie-path" name="cookie_path" required value="{{ settings.cookie_path }}"></div>
     <div class="settings-field"><label><input name="download_comments" type="checkbox" value="1" {% if settings.download_comments %}checked{% endif %}> Include comments in metadata</label><p class="settings-help">Disabled by default because large comment sets increase extraction memory.</p></div>

@@ -624,7 +624,7 @@ def _app_config() -> dict:
         },
         "downloads": {
             "limit_speed": int(settings["rate_limit"]) if settings["rate_limit"] else None,
-            "sleep_interval": None,
+            "sleep_interval": settings["subscription_download_delay"],
             "autodelete_days": None,
             "format": settings["download_quality"],
             "format_sort": None,
@@ -1119,13 +1119,21 @@ def register_ta_api(app) -> None:
         for section,values in data.items():
             if section not in {"subscriptions","downloads","application"} or not isinstance(values,dict): return _error(f"Unknown fields: {section}")
             current.setdefault(section,{}).update(values)
-        _set_setting("api_config_json",json.dumps(current))
         translated={}
         subs=data.get("subscriptions",{}); downloads=data.get("downloads",{})
         if "channel_size" in subs and subs["channel_size"] is not None: translated["collection_limit"]=int(subs["channel_size"])
         if "limit_speed" in downloads: translated["rate_limit"]="" if downloads["limit_speed"] is None else str(downloads["limit_speed"])
+        if "sleep_interval" in downloads and downloads["sleep_interval"] is not None:
+            try:
+                sleep_interval = int(downloads["sleep_interval"])
+            except (TypeError, ValueError):
+                return _error("sleep_interval must be a whole number")
+            if not 0 <= sleep_interval <= 86400:
+                return _error("sleep_interval must be between 0 and 86400")
+            translated["subscription_download_delay"] = sleep_interval
         if "add_metadata" in downloads: translated["write_info_json"]=int(bool(downloads["add_metadata"]))
         if "subtitle" in downloads: translated["download_subtitles"]=int(downloads["subtitle"] is not None); translated["subtitle_languages"]=downloads["subtitle"] or "en"
+        _set_setting("api_config_json",json.dumps(current))
         if translated: update_settings(_database_path(),translated)
         return jsonify(_app_config())
 

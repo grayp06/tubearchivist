@@ -80,6 +80,7 @@ from library import (
     recover_interrupted_downloads,
     remove_ignored,
     save_media,
+    seconds_until_next_download,
     set_media_watched,
     update_channel_art,
     update_download,
@@ -276,6 +277,14 @@ def validate_advanced_settings(form: object) -> dict:
         raise ValueError("Page size must be a whole number.") from exc
     if not 6 <= page_size <= 100:
         raise ValueError("Page size must be between 6 and 100.")
+    try:
+        subscription_delay = int(form.get("subscription_download_delay", 60))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Subscription download delay must be a whole number.") from exc
+    if not 0 <= subscription_delay <= 86400:
+        raise ValueError(
+            "Subscription download delay must be between 0 and 86,400 seconds."
+        )
     languages = str(form.get("subtitle_languages", "en")).strip() or "en"
     if len(languages) > 100:
         raise ValueError("Subtitle language list is too long.")
@@ -310,6 +319,7 @@ def validate_advanced_settings(form: object) -> dict:
             "sponsorblock_categories": categories,
             "cookie_path": str(cookie_path),
             "rate_limit": rate_limit,
+            "subscription_download_delay": subscription_delay,
             "output_template": output_template,
             "download_comments": int(form.get("download_comments") == "1"),
         }
@@ -565,7 +575,13 @@ def expand_collection(download: dict, info: dict) -> None:
     download_id = int(download["id"])
     kind = collection_kind(str(download["source_url"]))
     title = str(info.get("title") or info.get("playlist_title") or download["source_url"])
-    limit = get_settings(DATABASE_PATH)["collection_limit"]
+    settings = get_settings(DATABASE_PATH)
+    limit = settings["collection_limit"]
+    defer_seconds = (
+        settings["subscription_download_delay"]
+        if download.get("subscription_id") is not None
+        else 0
+    )
     update_download(
         DATABASE_PATH,
         download_id,
@@ -613,7 +629,12 @@ def expand_collection(download: dict, info: dict) -> None:
             }
         )
         if len(batch) >= min(100, limit - total_items):
-            enqueue_collection_items(DATABASE_PATH, download_id, batch)
+            enqueue_collection_items(
+                DATABASE_PATH,
+                download_id,
+                batch,
+                defer_seconds=defer_seconds,
+            )
             batch.clear()
             total_items = count_collection_items(DATABASE_PATH, download_id)
             update_download(
@@ -623,7 +644,12 @@ def expand_collection(download: dict, info: dict) -> None:
                 percent=f"{total_items} new videos (limit {limit})",
             )
     if batch and total_items < limit:
-        enqueue_collection_items(DATABASE_PATH, download_id, batch)
+        enqueue_collection_items(
+            DATABASE_PATH,
+            download_id,
+            batch,
+            defer_seconds=defer_seconds,
+        )
     total_items = count_collection_items(DATABASE_PATH, download_id)
 
     update_download(
@@ -683,7 +709,7 @@ def download_worker() -> None:
         QUEUE_WAKE.clear()
         download = claim_next_download(DATABASE_PATH)
         if download is None:
-            QUEUE_WAKE.wait()
+            QUEUE_WAKE.wait(timeout=seconds_until_next_download(DATABASE_PATH))
             continue
         run_download(download)
 
