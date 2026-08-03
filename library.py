@@ -687,8 +687,13 @@ def remove_ignored(database_path: Path, ignored_id: int) -> bool:
     return cursor.rowcount == 1
 
 
-def delete_media_and_ignore(database_path: Path, media_id: int) -> dict | None:
-    """Forget downloaded media while permanently retaining its ignore identity."""
+def _delete_media(
+    database_path: Path,
+    media_id: int,
+    *,
+    ignore: bool,
+) -> dict | None:
+    """Remove one media row, optionally retaining its stable ignore identity."""
     with connect(database_path) as connection:
         row = connection.execute(
             """
@@ -700,16 +705,27 @@ def delete_media_and_ignore(database_path: Path, media_id: int) -> dict | None:
         if row is None:
             return None
         item = dict(row)
-        _upsert_ignored(
-            connection,
-            str(item["webpage_url"] or item["source_url"]),
-            str(item["extractor"]),
-            str(item["video_id"]),
-            str(item["title"]),
-        )
+        if ignore:
+            _upsert_ignored(
+                connection,
+                str(item["webpage_url"] or item["source_url"]),
+                str(item["extractor"]),
+                str(item["video_id"]),
+                str(item["title"]),
+            )
         connection.execute("UPDATE downloads SET media_id=NULL WHERE media_id=?", (media_id,))
         connection.execute("DELETE FROM media WHERE id=?", (media_id,))
     return item
+
+
+def delete_media(database_path: Path, media_id: int) -> dict | None:
+    """Forget downloaded media without preventing a future download."""
+    return _delete_media(database_path, media_id, ignore=False)
+
+
+def delete_media_and_ignore(database_path: Path, media_id: int) -> dict | None:
+    """Forget downloaded media while permanently retaining its ignore identity."""
+    return _delete_media(database_path, media_id, ignore=True)
 
 
 def set_media_watched(database_path: Path, media_id: int, watched: bool) -> bool:

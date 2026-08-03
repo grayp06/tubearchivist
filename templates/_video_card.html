@@ -31,6 +31,10 @@
       <button class="small secondary" type="submit">Add</button>
     </form>
   {% endif %}
+  <form class="card-actions" method="post" action="{{ url_for('delete_only_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file? The video can be downloaded again later.')">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button class="small danger" type="submit">Delete, don&#39;t ignore</button>
+  </form>
   <form class="card-actions" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
     <input type="hidden" name="next" value="{{ request.path }}">
     <button class="small danger" type="submit">Delete &amp; ignore</button>

@@ -60,6 +60,7 @@ from library import (
     cancel_download,
     claim_next_download,
     count_collection_items,
+    delete_media,
     delete_media_and_ignore,
     delete_empty_channel,
     enqueue_collection_items,
@@ -93,6 +94,7 @@ from storage import (
     cache_playlist_thumbnail,
     cache_video_thumbnail,
     channel_art_relative_path,
+    delete_channel_art,
     delete_playlist_thumbnail,
     delete_video_thumbnail,
     migrate_storage_layout,
@@ -779,8 +781,8 @@ def channel_page(channel_id: int) -> str:
     )
 
 
-@APP.post("/channels/<int:channel_id>/delete-ignore")
-def delete_channel_page(channel_id: int) -> Response:
+def _delete_channel(channel_id: int, *, ignore: bool) -> Response:
+    """Delete a channel and its media, optionally adding videos to ignore."""
     channel = get_channel(DATABASE_PATH, channel_id)
     if channel is None:
         abort(404)
@@ -793,13 +795,28 @@ def delete_channel_page(channel_id: int) -> Response:
             path.relative_to(download_root)
         except ValueError:
             abort(400)
-        paths.append((video["id"], path))
-    for media_id, path in paths:
-        delete_media_and_ignore(DATABASE_PATH, media_id)
+        paths.append((video, path))
+    for video, path in paths:
+        delete_operation = delete_media_and_ignore if ignore else delete_media
+        delete_operation(DATABASE_PATH, video["id"])
         delete_media_files(path)
+        delete_video_thumbnail(CACHE_DIR, video["video_id"])
     if not delete_empty_channel(DATABASE_PATH, channel_id):
         abort(409)
+    delete_channel_art(CACHE_DIR, channel["channel_id"])
     return redirect(url_for("channels_page"), code=303)
+
+
+@APP.post("/channels/<int:channel_id>/delete")
+def delete_channel_only_page(channel_id: int) -> Response:
+    """Delete a channel while allowing all of its videos to be downloaded again."""
+    return _delete_channel(channel_id, ignore=False)
+
+
+@APP.post("/channels/<int:channel_id>/delete-ignore")
+def delete_channel_page(channel_id: int) -> Response:
+    """Delete a channel and retain ignore identities for all of its videos."""
+    return _delete_channel(channel_id, ignore=True)
 
 
 @APP.get("/search")
@@ -1271,6 +1288,27 @@ def delete_ignore_page(media_id: int) -> Response:
     except ValueError:
         abort(400)
     if delete_media_and_ignore(DATABASE_PATH, media_id) is None:
+        abort(404)
+    delete_media_files(file_path)
+    delete_video_thumbnail(CACHE_DIR, video["video_id"])
+    target = request.form.get("next") or url_for("home_page")
+    if not target.startswith("/") or target.startswith("//"):
+        target = url_for("home_page")
+    return redirect(target, code=303)
+
+
+@APP.post("/videos/<int:media_id>/delete")
+def delete_only_page(media_id: int) -> Response:
+    """Delete one media file and library row without ignoring the video."""
+    video = get_media(DATABASE_PATH, media_id)
+    if video is None:
+        abort(404)
+    file_path = Path(video["file_path"]).resolve()
+    try:
+        file_path.relative_to(DOWNLOAD_DIR.resolve())
+    except ValueError:
+        abort(400)
+    if delete_media(DATABASE_PATH, media_id) is None:
         abort(404)
     delete_media_files(file_path)
     delete_video_thumbnail(CACHE_DIR, video["video_id"])

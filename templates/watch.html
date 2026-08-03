@@ -26,6 +26,10 @@
         <button class="secondary" type="submit">Mark {{ 'unwatched' if video.watched else 'watched' }}</button>
       </form>
       <form class="danger-action" method="post" action="{{ url_for('refresh_video_page', media_id=video.id) }}"><button class="secondary" type="submit">Refresh metadata</button></form>
+      <form class="danger-action" method="post" action="{{ url_for('delete_only_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file? The video can be downloaded again later.')">
+        <input type="hidden" name="next" value="{{ url_for('home_page') }}">
+        <button class="danger" type="submit">Delete, don&#39;t ignore</button>
+      </form>
       <form class="danger-action" method="post" action="{{ url_for('delete_ignore_page', media_id=video.id) }}" onsubmit="return confirm('Delete this downloaded file and ignore the video?')">
         <input type="hidden" name="next" value="{{ url_for('home_page') }}">
         <button class="danger" type="submit">Delete &amp; ignore</button>

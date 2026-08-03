@@ -11,7 +11,11 @@
       {% endif %}
       <div><h1>{{ channel.name }}</h1><div class="muted">{{ channel.video_count }} archived video{{ '' if channel.video_count == 1 else 's' }} · {{ channel.watched_count }} watched</div></div>
     </div>
-    <div class="queue-actions"><a class="button secondary" href="{{ url_for('channels_page') }}">All channels</a><form method="post" action="{{ url_for('delete_channel_page', channel_id=channel.id) }}" onsubmit="return confirm('Delete this channel, its files, and ignore every archived video?')"><button class="danger" type="submit">Delete channel &amp; ignore videos</button></form></div>
+    <div class="queue-actions">
+      <a class="button secondary" href="{{ url_for('channels_page') }}">All channels</a>
+      <form method="post" action="{{ url_for('delete_channel_only_page', channel_id=channel.id) }}" onsubmit="return confirm('Delete this channel and all its downloaded files? Its videos can be downloaded again later.')"><button class="danger" type="submit">Delete, don&#39;t ignore</button></form>
+      <form method="post" action="{{ url_for('delete_channel_page', channel_id=channel.id) }}" onsubmit="return confirm('Delete this channel, its files, and ignore every archived video?')"><button class="danger" type="submit">Delete channel &amp; ignore videos</button></form>
+    </div>
   </div>
   {% if videos %}
     <section class="video-grid" aria-label="{{ channel.name }} videos">

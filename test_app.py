@@ -47,6 +47,7 @@ from library import (
     add_ignored,
     cancel_download,
     claim_next_download,
+    delete_media,
     delete_media_and_ignore,
     enqueue_collection_items,
     enqueue_download,
@@ -446,6 +447,36 @@ class DownloadQueueTests(unittest.TestCase):
                     "https://youtu.be/delete-me",
                     "Youtube",
                     "delete-me",
+                )
+            )
+
+    def test_downloaded_media_can_be_deleted_without_being_ignored(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            initialize_database(database_path)
+            file_path = root / "video.mp4"
+            file_path.write_bytes(b"video")
+            media_id = save_media(
+                database_path,
+                "https://youtu.be/delete-again",
+                {
+                    "id": "delete-again",
+                    "extractor_key": "Youtube",
+                    "title": "Delete and allow again",
+                    "webpage_url": "https://www.youtube.com/watch?v=delete-again",
+                },
+                file_path,
+            )
+            deleted = delete_media(database_path, media_id)
+            self.assertEqual(deleted["video_id"], "delete-again")
+            self.assertIsNone(get_media(database_path, media_id))
+            self.assertFalse(
+                is_ignored(
+                    database_path,
+                    "https://youtu.be/delete-again",
+                    "Youtube",
+                    "delete-again",
                 )
             )
 
@@ -893,6 +924,87 @@ class FlaskEndpointTests(unittest.TestCase):
                 self.assertFalse(file_path.exists())
                 self.assertFalse(sidecar_path.exists())
                 self.assertIsNone(get_media(database_path, media_id))
+
+    def test_video_and_channel_can_be_deleted_without_being_ignored(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database_path = root / "library.db"
+            download_dir = root / "downloads"
+            cache_dir = root / "cache"
+            download_dir.mkdir()
+            cache_dir.mkdir()
+            initialize_database(database_path)
+            with (
+                patch("app.DATABASE_PATH", database_path),
+                patch("app.DOWNLOAD_DIR", download_dir),
+                patch("app.CACHE_DIR", cache_dir),
+            ):
+                client = APP.test_client()
+                file_path = download_dir / "delete-only.mp4"
+                file_path.write_bytes(b"video")
+                media_id = save_media(
+                    database_path,
+                    "https://youtu.be/delete-only",
+                    {
+                        "id": "delete-only",
+                        "extractor_key": "Youtube",
+                        "title": "Delete only route",
+                    },
+                    file_path,
+                )
+                watch_response = client.get(f"/watch/{media_id}")
+                self.assertIn(b"Delete, don&#39;t ignore", watch_response.data)
+                deleted_response = client.post(
+                    f"/videos/{media_id}/delete",
+                    data={"next": "/"},
+                )
+                self.assertEqual(deleted_response.status_code, 303)
+                self.assertFalse(file_path.exists())
+                self.assertIsNone(get_media(database_path, media_id))
+                self.assertFalse(
+                    is_ignored(
+                        database_path,
+                        "https://youtu.be/delete-only",
+                        "Youtube",
+                        "delete-only",
+                    )
+                )
+
+                channel_files = []
+                for video_id in ("channel-one", "channel-two"):
+                    channel_file = download_dir / f"{video_id}.mp4"
+                    channel_file.write_bytes(b"video")
+                    channel_files.append(channel_file)
+                    save_media(
+                        database_path,
+                        f"https://youtu.be/{video_id}",
+                        {
+                            "id": video_id,
+                            "extractor_key": "Youtube",
+                            "title": video_id,
+                            "channel_id": "UC-delete-only",
+                            "channel": "Delete Only Channel",
+                        },
+                        channel_file,
+                    )
+                channel = list_channels(database_path)[0]
+                channel_response = client.get(f"/channels/{channel['id']}")
+                self.assertIn(b"Delete, don&#39;t ignore", channel_response.data)
+                deleted_channel_response = client.post(
+                    f"/channels/{channel['id']}/delete"
+                )
+                self.assertEqual(deleted_channel_response.status_code, 303)
+                self.assertFalse(any(path.exists() for path in channel_files))
+                self.assertEqual(list_channels(database_path), [])
+                for video_id in ("channel-one", "channel-two"):
+                    self.assertFalse(
+                        is_ignored(
+                            database_path,
+                            f"https://youtu.be/{video_id}",
+                            "Youtube",
+                            video_id,
+                        )
+                    )
 
     def test_pages_are_server_rendered_without_polling(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
