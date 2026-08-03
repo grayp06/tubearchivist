@@ -20,6 +20,7 @@ from app import (
     validate_settings,
     validate_advanced_settings,
     video_identity,
+    youtube_operation,
     yt_dlp_download_options,
 )
 from features import (
@@ -48,6 +49,7 @@ from library import (
     cancel_download,
     claim_next_download,
     connect,
+    defer_youtube_downloads,
     delete_media,
     delete_media_and_ignore,
     enqueue_collection_items,
@@ -65,6 +67,7 @@ from library import (
     remove_ignored,
     save_media,
     seconds_until_next_download,
+    seconds_until_youtube_available,
     set_media_watched,
     update_media_progress,
     update_settings,
@@ -527,7 +530,7 @@ class DownloadQueueTests(unittest.TestCase):
             self.assertEqual(parent_row["item_count"], 2)
             self.assertEqual([item["title"] for item in children], ["One", "Two"])
 
-    def test_subscription_rescan_defers_only_discovered_video_downloads(self):
+    def test_global_youtube_delay_paces_subscription_and_manual_downloads(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "library.db"
             initialize_database(database_path)
@@ -563,28 +566,35 @@ class DownloadQueueTests(unittest.TestCase):
                 if item["parent_id"] == parent["id"]
             )
             self.assertEqual(child["subscription_id"], subscription["id"])
-            self.assertIsNotNone(child["available_at"])
+            manual = enqueue_download(
+                database_path,
+                "https://youtu.be/manual-too",
+                kind="video",
+            )
+            defer_youtube_downloads(database_path, 120)
+            queued = {
+                item["id"]: item
+                for item in list_downloads(database_path)
+                if item["status"] == "queued"
+            }
+            self.assertIsNotNone(queued[child["id"]]["available_at"])
+            self.assertIsNotNone(queued[manual["id"]]["available_at"])
             wait_seconds = seconds_until_next_download(database_path)
             self.assertGreater(wait_seconds, 0)
             self.assertLessEqual(wait_seconds, 120)
             self.assertIsNone(claim_next_download(database_path))
 
-            manual = enqueue_download(
-                database_path,
-                "https://youtu.be/manual-now",
-                kind="video",
-            )
-            self.assertEqual(claim_next_download(database_path)["id"], manual["id"])
+            defer_youtube_downloads(database_path, 0)
+            self.assertEqual(claim_next_download(database_path)["id"], child["id"])
             with connect(database_path) as connection:
                 connection.execute(
                     "UPDATE downloads SET status='complete' WHERE id=?",
-                    (manual["id"],),
-                )
-                connection.execute(
-                    "UPDATE downloads SET available_at=CURRENT_TIMESTAMP WHERE id=?",
                     (child["id"],),
                 )
-            self.assertEqual(claim_next_download(database_path)["id"], child["id"])
+            defer_youtube_downloads(database_path, 120)
+            self.assertIsNone(claim_next_download(database_path))
+            defer_youtube_downloads(database_path, 0)
+            self.assertEqual(claim_next_download(database_path)["id"], manual["id"])
 
     def test_collection_expansion_respects_persistent_limit(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -626,6 +636,22 @@ class DownloadQueueTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_direct_youtube_operation_persists_global_cooldown(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "library.db"
+            initialize_database(database_path)
+            update_settings(database_path, {"subscription_download_delay": 30})
+            with patch("app.DATABASE_PATH", database_path), youtube_operation():
+                pass
+            self.assertGreater(seconds_until_youtube_available(database_path), 0)
+            manual = enqueue_download(
+                database_path,
+                "https://youtu.be/cooldown-manual",
+                kind="video",
+            )
+            self.assertIsNotNone(manual["available_at"])
+            self.assertIsNone(claim_next_download(database_path))
+
     def test_advanced_settings_are_mapped_to_yt_dlp(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

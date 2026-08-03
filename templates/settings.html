@@ -19,9 +19,9 @@
     <div class="settings-field"><label for="sponsorblock">SponsorBlock categories to remove</label><input id="sponsorblock" name="sponsorblock_categories" value="{{ settings.sponsorblock_categories }}" placeholder="sponsor, selfpromo"><p class="settings-help">Leave blank to disable. Categories are passed to yt-dlp's built-in SponsorBlock postprocessors.</p></div>
     <div class="settings-field"><label for="rate-limit">Download rate limit (KiB/s)</label><input id="rate-limit" name="rate_limit" inputmode="numeric" value="{{ settings.rate_limit }}" placeholder="Blank for unlimited"></div>
     <div class="settings-field">
-      <label for="subscription-download-delay">Wait after subscription rescan (seconds)</label>
+      <label for="subscription-download-delay">Wait between YouTube operations (seconds)</label>
       <input id="subscription-download-delay" name="subscription_download_delay" type="number" min="0" max="86400" step="1" required value="{{ settings.subscription_download_delay }}">
-      <p class="settings-help">Videos discovered by a subscription rescan remain queued for this long before downloads begin. Manual downloads are not delayed. Set to 0 to start immediately.</p>
+      <p class="settings-help">After any queued video, channel, playlist, or subscription rescan finishes, the next queued operation waits this long. This includes manual downloads. Set to 0 to disable the wait.</p>
     </div>
     <div class="settings-field"><strong>TubeArchivist storage layout</strong><p class="settings-help">Media filenames are fixed as <code>/youtube/&lt;channel-id&gt;/&lt;video-id&gt;.mp4</code>. Artwork is cached under <code>/cache/videos</code>, <code>/cache/channels</code>, and <code>/cache/playlists</code>.</p></div>
     <div class="settings-field"><label for="cookie-path">Cookie file path</label><input id="cookie-path" name="cookie_path" required value="{{ settings.cookie_path }}"></div>

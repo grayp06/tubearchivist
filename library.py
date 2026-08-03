@@ -96,6 +96,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
 )
 """
 
+QUEUE_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS queue_state (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    youtube_available_at TEXT
+)
+"""
+
 IGNORED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ignored_videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +176,8 @@ def initialize_database(database_path: Path) -> None:
 
         connection.execute(DOWNLOADS_SCHEMA)
         connection.execute(SETTINGS_SCHEMA)
+        connection.execute(QUEUE_STATE_SCHEMA)
+        connection.execute("INSERT OR IGNORE INTO queue_state (id) VALUES (1)")
         connection.execute(IGNORED_SCHEMA)
         channel_columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(channels)")
@@ -916,8 +925,14 @@ def enqueue_download(
         cursor = connection.execute(
             """
             INSERT INTO downloads (
-                source_url, kind, parent_id, source_position, title
-            ) VALUES (?, ?, ?, ?, ?)
+                source_url, kind, parent_id, source_position, title, available_at
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                (SELECT CASE
+                    WHEN youtube_available_at > CURRENT_TIMESTAMP
+                    THEN youtube_available_at END
+                 FROM queue_state WHERE id=1)
+            )
             """,
             (source_url, kind, parent_id, source_position, title),
         )
@@ -932,8 +947,6 @@ def enqueue_collection_items(
     database_path: Path,
     parent_id: int,
     items: list[dict],
-    *,
-    defer_seconds: int = 0,
 ) -> int:
     """Append a batch of unique, not-yet-archived collection videos."""
     inserted = 0
@@ -998,9 +1011,10 @@ def enqueue_collection_items(
                 ) VALUES (
                     ?, 'video', ?, ?, ?,
                     (SELECT subscription_id FROM downloads WHERE id=?),
-                    CASE WHEN ? > 0
-                         THEN datetime('now', '+' || ? || ' seconds')
-                         ELSE NULL END
+                    (SELECT CASE
+                        WHEN youtube_available_at > CURRENT_TIMESTAMP
+                        THEN youtube_available_at END
+                     FROM queue_state WHERE id=1)
                 )
                 """,
                 (
@@ -1009,8 +1023,6 @@ def enqueue_collection_items(
                     item.get("source_position"),
                     item.get("title"),
                     parent_id,
-                    defer_seconds,
-                    defer_seconds,
                 ),
             )
             inserted += cursor.rowcount
@@ -1035,6 +1047,14 @@ def claim_next_download(database_path: Path) -> dict | None:
             "SELECT 1 FROM downloads WHERE status='downloading' LIMIT 1"
         ).fetchone()
         if active is not None:
+            return None
+        cooldown = connection.execute(
+            """
+            SELECT 1 FROM queue_state
+            WHERE id=1 AND youtube_available_at > CURRENT_TIMESTAMP
+            """
+        ).fetchone()
+        if cooldown is not None:
             return None
         row = connection.execute(
             """
@@ -1063,22 +1083,82 @@ def claim_next_download(database_path: Path) -> dict | None:
     return dict(claimed)
 
 
+def defer_youtube_downloads(database_path: Path, delay_seconds: int) -> None:
+    """Persist the global cooldown before any queued YouTube operation may start."""
+    delay = max(0, int(delay_seconds))
+    with connect(database_path) as connection:
+        if delay == 0:
+            connection.execute(
+                "UPDATE queue_state SET youtube_available_at=NULL WHERE id=1"
+            )
+            connection.execute(
+                """
+                UPDATE downloads SET available_at=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE status='queued'
+                """
+            )
+            return
+        modifier = f"+{delay} seconds"
+        connection.execute(
+            """
+            UPDATE queue_state
+            SET youtube_available_at=datetime('now', ?)
+            WHERE id=1
+            """,
+            (modifier,),
+        )
+        connection.execute(
+            """
+            UPDATE downloads
+            SET available_at=(
+                    SELECT youtube_available_at FROM queue_state WHERE id=1
+                ),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE status='queued'
+            """
+        )
+
+
 def seconds_until_next_download(database_path: Path) -> float | None:
-    """Return the one-shot wait until the next deferred queued row is eligible."""
+    """Return the one-shot wait until the global queue cooldown expires."""
     with connect(database_path) as connection:
         row = connection.execute(
             """
-            SELECT MIN(
-                CAST(strftime('%s', available_at) AS INTEGER)
-                - CAST(strftime('%s', 'now') AS INTEGER)
-            ) AS seconds
-            FROM downloads
-            WHERE status='queued' AND available_at > CURRENT_TIMESTAMP
+            SELECT COUNT(*) AS queued,
+                   MIN(CASE WHEN available_at > CURRENT_TIMESTAMP THEN
+                       CAST(strftime('%s', available_at) AS INTEGER)
+                       - CAST(strftime('%s', 'now') AS INTEGER)
+                   END) AS row_seconds,
+                   (SELECT CASE WHEN youtube_available_at > CURRENT_TIMESTAMP THEN
+                       CAST(strftime('%s', youtube_available_at) AS INTEGER)
+                       - CAST(strftime('%s', 'now') AS INTEGER)
+                   END FROM queue_state WHERE id=1) AS global_seconds
+            FROM downloads WHERE status='queued'
             """
         ).fetchone()
-    if row is None or row["seconds"] is None:
+    if row is None or not row["queued"]:
         return None
-    return max(0.0, float(row["seconds"]))
+    waits = [
+        float(value)
+        for value in (row["row_seconds"], row["global_seconds"])
+        if value is not None
+    ]
+    return max(0.0, *waits) if waits else 0.0
+
+
+def seconds_until_youtube_available(database_path: Path) -> float:
+    """Return the durable cooldown before another direct YouTube operation."""
+    with connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT CASE WHEN youtube_available_at > CURRENT_TIMESTAMP THEN
+                CAST(strftime('%s', youtube_available_at) AS INTEGER)
+                - CAST(strftime('%s', 'now') AS INTEGER)
+            ELSE 0 END AS seconds
+            FROM queue_state WHERE id=1
+            """
+        ).fetchone()
+    return max(0.0, float(row["seconds"] or 0)) if row is not None else 0.0
 
 
 def get_download(database_path: Path, download_id: int) -> dict | None:

@@ -177,8 +177,15 @@ def queue_subscription_scan(database_path: Path) -> int:
                 continue
             connection.execute(
                 """
-                INSERT INTO downloads (source_url, kind, title, subscription_id)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO downloads (
+                    source_url, kind, title, subscription_id, available_at
+                ) VALUES (
+                    ?, ?, ?, ?,
+                    (SELECT CASE
+                        WHEN youtube_available_at > CURRENT_TIMESTAMP
+                        THEN youtube_available_at END
+                     FROM queue_state WHERE id=1)
+                )
                 """,
                 (item["source_url"], item["kind"], item["name"], item["id"]),
             )
@@ -474,7 +481,12 @@ def retry_download(database_path: Path, download_id: int) -> bool:
             """
             UPDATE downloads
             SET status='queued', progress=0, percent=NULL, speed=NULL, eta=NULL,
-                error=NULL, started_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP
+                error=NULL, started_at=NULL, finished_at=NULL,
+                available_at=(SELECT CASE
+                    WHEN youtube_available_at > CURRENT_TIMESTAMP
+                    THEN youtube_available_at END
+                    FROM queue_state WHERE id=1),
+                updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND status IN ('error', 'cancelled')
             """,
             (download_id,),

@@ -7,6 +7,7 @@ import math
 import json
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -60,6 +61,7 @@ from library import (
     cancel_download,
     claim_next_download,
     count_collection_items,
+    defer_youtube_downloads,
     delete_media,
     delete_media_and_ignore,
     delete_empty_channel,
@@ -81,6 +83,7 @@ from library import (
     remove_ignored,
     save_media,
     seconds_until_next_download,
+    seconds_until_youtube_available,
     set_media_watched,
     update_channel_art,
     update_download,
@@ -127,11 +130,28 @@ QUALITY_OPTIONS = {
 
 QUEUE_WAKE = threading.Event()
 WORKER_LOCK = threading.Lock()
+YOUTUBE_LOCK = threading.Lock()
 WORKER_THREAD: threading.Thread | None = None
 
 
 class DownloadCancelled(Exception):
     """Stop yt-dlp when the durable queue row has been cancelled."""
+
+
+@contextmanager
+def youtube_operation():
+    """Serialize and pace direct yt-dlp operations using durable SQLite state."""
+    with YOUTUBE_LOCK:
+        wait_seconds = seconds_until_youtube_available(DATABASE_PATH)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds + 0.05)
+        try:
+            yield
+        finally:
+            defer_youtube_downloads(
+                DATABASE_PATH,
+                get_settings(DATABASE_PATH)["subscription_download_delay"],
+            )
 
 
 def validate_url(value: object) -> str:
@@ -417,8 +437,11 @@ def hydrate_missing_channel_thumbnails(limit: int = 5) -> None:
             break
         attempted += 1
         try:
-            with YoutubeDL(options) as downloader:
-                info = downloader.extract_info(channel["source_url"], download=False)
+            with youtube_operation():
+                with YoutubeDL(options) as downloader:
+                    info = downloader.extract_info(
+                        channel["source_url"], download=False
+                    )
             art = select_channel_art(info)
             update_channel_art(
                 DATABASE_PATH,
@@ -537,20 +560,21 @@ def download_video(download: dict) -> None:
     url = str(download["source_url"])
     progress_state = {"last_write": 0.0}
     options = yt_dlp_download_options(download_id, progress_state)
-    with YoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=True)
-        if is_download_cancelled(DATABASE_PATH, download_id):
-            raise DownloadCancelled("Download cancelled by user.")
-        downloaded_path = get_downloaded_file(info, downloader).resolve()
-        file_path = archive_download(
-            downloaded_path,
-            DOWNLOAD_DIR,
-            info.get("channel_id") or info.get("uploader_id"),
-            info.get("id"),
-        )
-        media_id = save_media(DATABASE_PATH, url, info, file_path)
-        attach_download_to_playlist(DATABASE_PATH, download_id, media_id)
-        cache_video_thumbnail(CACHE_DIR, info.get("id"), info.get("thumbnail"))
+    with youtube_operation():
+        with YoutubeDL(options) as downloader:
+            info = downloader.extract_info(url, download=True)
+            if is_download_cancelled(DATABASE_PATH, download_id):
+                raise DownloadCancelled("Download cancelled by user.")
+            downloaded_path = get_downloaded_file(info, downloader).resolve()
+            file_path = archive_download(
+                downloaded_path,
+                DOWNLOAD_DIR,
+                info.get("channel_id") or info.get("uploader_id"),
+                info.get("id"),
+            )
+            media_id = save_media(DATABASE_PATH, url, info, file_path)
+            attach_download_to_playlist(DATABASE_PATH, download_id, media_id)
+            cache_video_thumbnail(CACHE_DIR, info.get("id"), info.get("thumbnail"))
     update_download(
         DATABASE_PATH,
         download_id,
@@ -577,11 +601,6 @@ def expand_collection(download: dict, info: dict) -> None:
     title = str(info.get("title") or info.get("playlist_title") or download["source_url"])
     settings = get_settings(DATABASE_PATH)
     limit = settings["collection_limit"]
-    defer_seconds = (
-        settings["subscription_download_delay"]
-        if download.get("subscription_id") is not None
-        else 0
-    )
     update_download(
         DATABASE_PATH,
         download_id,
@@ -629,12 +648,7 @@ def expand_collection(download: dict, info: dict) -> None:
             }
         )
         if len(batch) >= min(100, limit - total_items):
-            enqueue_collection_items(
-                DATABASE_PATH,
-                download_id,
-                batch,
-                defer_seconds=defer_seconds,
-            )
+            enqueue_collection_items(DATABASE_PATH, download_id, batch)
             batch.clear()
             total_items = count_collection_items(DATABASE_PATH, download_id)
             update_download(
@@ -644,12 +658,7 @@ def expand_collection(download: dict, info: dict) -> None:
                 percent=f"{total_items} new videos (limit {limit})",
             )
     if batch and total_items < limit:
-        enqueue_collection_items(
-            DATABASE_PATH,
-            download_id,
-            batch,
-            defer_seconds=defer_seconds,
-        )
+        enqueue_collection_items(DATABASE_PATH, download_id, batch)
     total_items = count_collection_items(DATABASE_PATH, download_id)
 
     update_download(
@@ -681,8 +690,11 @@ def run_download(download: dict) -> None:
             "lazy_playlist": True,
             "skip_download": True,
         }
-        with YoutubeDL(options) as downloader:
-            info = downloader.extract_info(collection_probe_url(url), download=False)
+        with youtube_operation():
+            with YoutubeDL(options) as downloader:
+                info = downloader.extract_info(
+                    collection_probe_url(url), download=False
+                )
         if info.get("_type") == "playlist" or info.get("entries") is not None:
             expand_collection(download, info)
         else:
@@ -1284,8 +1296,12 @@ def refresh_video_page(media_id: int) -> Response:
     if cookie_path.is_file():
         options["cookiefile"] = str(cookie_path)
     try:
-        with YoutubeDL(options) as downloader:
-            info = downloader.extract_info(video["webpage_url"] or video["source_url"], download=False)
+        with youtube_operation():
+            with YoutubeDL(options) as downloader:
+                info = downloader.extract_info(
+                    video["webpage_url"] or video["source_url"],
+                    download=False,
+                )
         save_media(DATABASE_PATH, video["source_url"], info, file_path)
         cache_video_thumbnail(
             CACHE_DIR,
