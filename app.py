@@ -759,7 +759,7 @@ def enqueue_url(value: object) -> dict:
 def add_security_headers(response: Response) -> Response:
     """Apply the small app's cache and browser security policy."""
     if request.path.startswith("/api/media/") and response.status_code < 400:
-        response.headers["Cache-Control"] = "private, max-age=3600"
+        response.headers["Cache-Control"] = "private, max-age=3600, no-transform"
     else:
         response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1415,7 +1415,14 @@ def media_api(media_id: int) -> Response:
         return jsonify({"error": "Video file is unavailable."}), 404
     if not file_path.is_file():
         return jsonify({"error": "Video file is unavailable."}), 404
-    return send_file(file_path, conditional=True, max_age=3600)
+    response = send_file(file_path, conditional=True, max_age=3600)
+    response.headers["Cache-Control"] = "private, max-age=3600, no-transform"
+    origin = request.headers.get("Origin")
+    if origin and urlparse(origin).netloc == request.host:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers.add("Vary", "Origin")
+    return response
 
 
 @APP.get("/cache/<path:filename>")

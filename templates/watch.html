@@ -4,9 +4,8 @@
   <div class="watch-layout">
     {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
     {% set thumb_url = video_thumbnail_url(video.video_id) %}
-    <video id="player" class="player" controls preload="metadata" playsinline {% if thumb_url %}poster="{{ thumb_url }}"{% endif %} aria-label="Play {{ video.title }}">
-      <source src="{{ url_for('media_api', media_id=video.id) }}" type="video/mp4">
-    </video>
+    <video id="player" class="player" controls preload="metadata" playsinline webkit-playsinline crossorigin="use-credentials" src="{{ url_for('media_api', media_id=video.id) }}" {% if thumb_url %}poster="{{ thumb_url }}"{% endif %} aria-label="Play {{ video.title }}"></video>
+    <p id="player-error" class="error" role="alert" hidden>Playback failed. <a href="{{ url_for('media_api', media_id=video.id) }}">Download the video</a> to verify the file.</p>
     <div class="panel">
       <h1>{{ video.title }}</h1>
       <p class="muted">
@@ -80,6 +79,12 @@
     player.addEventListener('timeupdate', () => saveProgress(false));
     player.addEventListener('pause', () => saveProgress(true));
     player.addEventListener('ended', () => saveProgress(true));
+    player.addEventListener('error', () => {
+      const notice = document.querySelector('#player-error');
+      const detail = player.error ? ` Error code ${player.error.code}.` : '';
+      notice.firstChild.textContent = `Playback failed.${detail} `;
+      notice.hidden = false;
+    });
     window.addEventListener('pagehide', () => {
       if (currentPercentage() !== null) {
         navigator.sendBeacon(

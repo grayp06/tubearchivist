@@ -1195,6 +1195,11 @@ class FlaskEndpointTests(unittest.TestCase):
                 self.assertNotIn(b"Second channel video", channel_response.data)
                 watch_response = client.get(f"/watch/{first_id}")
                 self.assertIn(b"timeupdate", watch_response.data)
+                self.assertIn(b'crossorigin="use-credentials"', watch_response.data)
+                self.assertIn(b"webkit-playsinline", watch_response.data)
+                self.assertIn(
+                    f'src="/api/media/{first_id}"'.encode(), watch_response.data
+                )
                 self.assertNotIn(b"setInterval", watch_response.data)
 
                 partial = client.post(
@@ -1235,12 +1240,23 @@ class FlaskEndpointTests(unittest.TestCase):
                 client = APP.test_client()
                 response = client.get(
                     f"/api/media/{media_id}",
-                    headers={"Range": "bytes=2-5"},
+                    headers={
+                        "Range": "bytes=2-5",
+                        "Origin": "https://localhost",
+                    },
                 )
                 self.assertEqual(response.status_code, 206)
                 self.assertEqual(response.data, b"st-v")
                 self.assertEqual(response.headers["Content-Range"], "bytes 2-5/10")
                 self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+                self.assertEqual(
+                    response.headers["Access-Control-Allow-Origin"],
+                    "https://localhost",
+                )
+                self.assertEqual(
+                    response.headers["Access-Control-Allow-Credentials"], "true"
+                )
+                self.assertIn("no-transform", response.headers["Cache-Control"])
                 response.close()
                 self.assertEqual(client.get("/api/media/999").status_code, 404)
 
