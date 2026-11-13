@@ -9,12 +9,28 @@ from http import cookiejar
 from io import StringIO
 from os import path
 
-import yt_dlp
 from appsettings.src.config import AppConfig
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import deep_merge, rand_sleep
 from common.src.ta_redis import RedisArchivist
 from django.conf import settings
+
+
+class LazyYtDlp:
+    """
+    import yt_dlp on first use only
+    keeps it out of the memory of the web process until it is needed
+    """
+
+    def __getattr__(self, name):
+        # pylint: disable=import-outside-toplevel
+        import yt_dlp as module
+
+        return getattr(module, name)
+
+
+yt_dlp = LazyYtDlp()
+
 
 
 class YtWrap:

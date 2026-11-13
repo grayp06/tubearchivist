@@ -19,7 +19,6 @@ from PIL import Image
 from video.src.comments import Comments
 from video.src.index import YoutubeVideo
 from video.src.meta_embed import IndexFromEmbed
-from yt_dlp.utils import ISO639Utils
 
 
 class ImportFolderScanner:
@@ -319,6 +318,9 @@ class ImportFolderScanner:
         if ext == ".webm":
             print(f"{media_path}: subtitle extract from webm not supported")
             return
+
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import ISO639Utils
 
         for idx, stream in enumerate(streams["streams"]):
             if stream["codec_type"] == "subtitle":

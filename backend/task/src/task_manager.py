@@ -1,11 +1,11 @@
 """
 functionality:
-- interact with in redis stored task results
-- handle threads and locks
+- interact with stored task results
+- handle task locks and commands
 """
 
 from common.src.ta_redis import TaskRedis
-from task.celery import app as celery_app
+from task.src.task_queue import TaskQueue
 
 
 class TaskManager:
@@ -71,6 +71,7 @@ class TaskManager:
         mark all pending as failed,
         run at startup to recover from hard reset
         """
+        TaskQueue().recover()
         all_results = self.get_all_results()
         if not all_results:
             return
@@ -86,7 +87,10 @@ class TaskCommand:
 
     def start(self, task_name, kwargs: dict | None = None):
         """start task by task_name, only pass task that don't take args"""
-        task = celery_app.tasks.get(task_name).delay(**(kwargs or {}))
+        # pylint: disable=import-outside-toplevel
+        from task.src.runner import get_task
+
+        task = get_task(task_name).delay(**(kwargs or {}))
         message = {
             "task_id": task.id,
             "status": task.status,
@@ -106,4 +110,8 @@ class TaskCommand:
     def kill(self, task_id):
         """send kill signal to task_id"""
         print(f"[task][{task_id}]: received KILL signal.")
-        celery_app.control.revoke(task_id, terminate=True)
+        # pylint: disable=import-outside-toplevel
+        from task.src.dispatcher import wake_dispatcher
+
+        TaskRedis().set_command(task_id, "KILL")
+        wake_dispatcher()

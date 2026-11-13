@@ -1,29 +1,57 @@
 """
 functionality:
-- interact with redis
-- hold temporary download queue in redis
-- interact with celery tasks results
+- key value store with expiry, backed by sqlite
+- hold temporary queues in sqlite
+- store task state and results
+
+The class names are kept from the redis based implementation
+so the rest of the application doesn't need to care.
 """
 
 import json
+import time
 
-import redis
-from common.src.env_settings import EnvironmentSettings
+from common.src.sqlite_conn import STATE_DB, get_conn, write_tx
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    expires REAL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS queue (
+    name TEXT NOT NULL,
+    item TEXT NOT NULL,
+    score REAL NOT NULL,
+    PRIMARY KEY (name, item)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS queue_score ON queue (name, score);
+CREATE TABLE IF NOT EXISTS task (
+    task_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kwargs TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL,
+    message TEXT,
+    command TEXT,
+    pid INTEGER,
+    retries INTEGER NOT NULL DEFAULT 0,
+    run_after REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL,
+    expires REAL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS task_state ON task (state, created);
+"""
 
 
 class RedisBase:
-    """connection base for redis"""
-
-    NAME_SPACE: str = EnvironmentSettings.REDIS_NAME_SPACE
+    """connection base for the state store"""
 
     def __init__(self):
-        self.conn = redis.from_url(
-            url=EnvironmentSettings.REDIS_CON, decode_responses=True
-        )
+        self.conn = get_conn(STATE_DB, schema=SCHEMA)
 
 
 class RedisArchivist(RedisBase):
-    """collection of methods to interact with redis"""
+    """collection of methods to interact with key value store"""
 
     CHANNELS: list[str] = [
         "download",
@@ -42,83 +70,80 @@ class RedisArchivist(RedisBase):
         expire: bool | int = False,
         save: bool = False,
     ) -> None:
-        """write new message to redis"""
+        """write new message"""
+        # pylint: disable=unused-argument
         to_write = (
             json.dumps(message) if isinstance(message, dict) else message
         )
-        self.conn.execute_command("SET", self.NAME_SPACE + key, to_write)
-
+        expires = None
         if expire:
-            if isinstance(expire, bool):
-                secs: int = 20
-            else:
-                secs = expire
-            self.conn.execute_command("EXPIRE", self.NAME_SPACE + key, secs)
+            secs = 20 if isinstance(expire, bool) else expire
+            expires = time.time() + secs
 
-        if save:
-            self.bg_save()
-
-    def bg_save(self) -> None:
-        """save to aof"""
-        try:
-            self.conn.bgsave()
-        except redis.exceptions.ResponseError:
-            pass
+        self.conn.execute(
+            "INSERT OR REPLACE INTO kv (key, value, expires) VALUES (?, ?, ?)",
+            (key, to_write, expires),
+        )
 
     def get_message_str(self, key: str) -> str | None:
         """get message string"""
-        reply = self.conn.execute_command("GET", self.NAME_SPACE + key)
-        return reply
+        row = self.conn.execute(
+            "SELECT value FROM kv WHERE key = ? "
+            + "AND (expires IS NULL OR expires > ?)",
+            (key, time.time()),
+        ).fetchone()
+        if not row:
+            return None
+
+        return row[0]
 
     def get_message_dict(self, key: str) -> dict:
         """get message dict"""
-        reply = self.conn.execute_command("GET", self.NAME_SPACE + key)
+        reply = self.get_message_str(key)
         if not reply:
             return {}
 
         return json.loads(reply)
 
-    def get_message(self, key: str) -> dict | None:
-        """
-        get message dict from redis
-        old json get message, only used for migration, to be removed later
-        """
-        reply = self.conn.execute_command("JSON.GET", self.NAME_SPACE + key)
-        if reply:
-            return json.loads(reply)
-
-        return {"status": False}
-
     def list_keys(self, query: str) -> list:
         """return all key matches"""
-        reply = self.conn.execute_command(
-            "KEYS", self.NAME_SPACE + query + "*"
-        )
-        if not reply:
-            return []
+        self._purge()
+        rows = self.conn.execute(
+            "SELECT key FROM kv WHERE substr(key, 1, ?) = ?",
+            (len(query), query),
+        ).fetchall()
 
-        return [i.lstrip(self.NAME_SPACE) for i in reply]
+        return [i[0] for i in rows]
 
     def list_items(self, query: str) -> list:
         """list all matches"""
-        all_matches = self.list_keys(query)
-        if not all_matches:
-            return []
+        query = query.rstrip("*")
+        self._purge()
+        rows = self.conn.execute(
+            "SELECT value FROM kv WHERE substr(key, 1, ?) = ?",
+            (len(query), query),
+        ).fetchall()
 
-        return [self.get_message_dict(i) for i in all_matches]
+        return [json.loads(i[0]) for i in rows]
 
     def del_message(self, key: str, save: bool = False) -> bool:
-        """delete key from redis"""
-        response = self.conn.execute_command("DEL", self.NAME_SPACE + key)
-        if save:
-            self.bg_save()
+        """delete key"""
+        # pylint: disable=unused-argument
+        cursor = self.conn.execute("DELETE FROM kv WHERE key = ?", (key,))
 
-        return response
+        return bool(cursor.rowcount)
+
+    def _purge(self) -> None:
+        """remove expired keys"""
+        self.conn.execute(
+            "DELETE FROM kv WHERE expires IS NOT NULL AND expires <= ?",
+            (time.time(),),
+        )
 
 
 class RedisQueue(RedisBase):
     """
-    dynamically interact with queues in redis using sorted set
+    dynamically interact with queues, ordered by score
     - low score number is first in queue
     - add new items with high score number
 
@@ -136,21 +161,32 @@ class RedisQueue(RedisBase):
 
     def __init__(self, queue_name: str):
         super().__init__()
-        self.key = f"{self.NAME_SPACE}{queue_name}"
+        self.key = queue_name
 
     def get_all(self) -> list[str]:
         """return all elements in list"""
-        result = self.conn.zrange(self.key, 0, -1)
-        return result
+        rows = self.conn.execute(
+            "SELECT item FROM queue WHERE name = ? ORDER BY score, item",
+            (self.key,),
+        ).fetchall()
+
+        return [i[0] for i in rows]
 
     def length(self) -> int:
         """return total elements in list"""
-        return self.conn.zcard(self.key)
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM queue WHERE name = ?", (self.key,)
+        ).fetchone()
+
+        return row[0]
 
     def in_queue(self, element) -> str | bool:
         """check if element is in list"""
-        result = self.conn.zrank(self.key, element)
-        if result is not None:
+        row = self.conn.execute(
+            "SELECT 1 FROM queue WHERE name = ? AND item = ?",
+            (self.key, element),
+        ).fetchone()
+        if row:
             return "in_queue"
 
         return False
@@ -160,78 +196,140 @@ class RedisQueue(RedisBase):
         if not to_add:
             return
 
-        next_score = self._get_next_score()
-        self.conn.zadd(self.key, {to_add: next_score})
+        self.add_list([to_add])
 
     def add_list(self, to_add: list) -> None:
         """add list to queue"""
         if not to_add:
             return
 
-        next_score = self._get_next_score()
-        mapping = {i[1]: next_score + i[0] for i in enumerate(to_add)}
-        self.conn.zadd(self.key, mapping)
+        with write_tx(self.conn):
+            next_score = self._get_next_score()
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO queue (name, item, score) "
+                + "VALUES (?, ?, ?)",
+                [
+                    (self.key, item, next_score + idx)
+                    for idx, item in enumerate(to_add)
+                ],
+            )
 
     def max_score(self) -> int | None:
         """get max score"""
-        last = self.conn.zrange(self.key, -1, -1, withscores=True)
-        if not last:
+        row = self.conn.execute(
+            "SELECT MAX(score) FROM queue WHERE name = ?", (self.key,)
+        ).fetchone()
+        if row[0] is None:
             return None
 
-        return int(last[0][1])
+        return int(row[0])
 
     def _get_next_score(self) -> float:
         """get next score in queue to append"""
-        last = self.conn.zrange(self.key, -1, -1, withscores=True)
-        if not last:
+        last = self.max_score()
+        if last is None:
             return 1.0
 
-        return last[0][1] + 1
+        return last + 1.0
 
     def get_next(self) -> tuple[str | None, int | None]:
         """return next element in the queue, if available"""
-        result = self.conn.zpopmin(self.key)
-        if not result:
-            return None, None
+        with write_tx(self.conn):
+            row = self.conn.execute(
+                "SELECT item, score FROM queue WHERE name = ? "
+                + "ORDER BY score, item LIMIT 1",
+                (self.key,),
+            ).fetchone()
+            if not row:
+                return None, None
 
-        item, idx = result[0][0], int(result[0][1])
+            self.conn.execute(
+                "DELETE FROM queue WHERE name = ? AND item = ?",
+                (self.key, row[0]),
+            )
 
-        return item, idx
+        return row[0], int(row[1])
 
     def clear(self) -> None:
-        """delete list from redis"""
-        self.conn.delete(self.key)
+        """delete list"""
+        self.conn.execute("DELETE FROM queue WHERE name = ?", (self.key,))
 
 
 class TaskRedis(RedisBase):
-    """interact with redis tasks"""
+    """interact with stored tasks
 
-    BASE: str = "celery-task-meta-"
+    state is the lifecycle of the task in the runner:
+    QUEUED -> STARTED -> DONE
+    message is the result document as the api exposes it,
+    it only exists once the task registered itself or completed.
+    """
+
     EXPIRE: int = 60 * 60 * 24
     COMMANDS: list[str] = ["STOP", "KILL"]
 
     def get_all(self) -> list:
-        """return all tasks"""
-        all_keys = self.conn.execute_command("KEYS", f"{self.BASE}*")
-        return [i.replace(self.BASE, "") for i in all_keys]
+        """return all task ids with a result message"""
+        self._purge()
+        rows = self.conn.execute(
+            "SELECT task_id FROM task WHERE message IS NOT NULL "
+            + "ORDER BY created"
+        ).fetchall()
+
+        return [i[0] for i in rows]
 
     def get_single(self, task_id: str) -> dict:
         """return content of single task"""
-        result = self.conn.execute_command("GET", self.BASE + task_id)
-        if not result:
+        row = self.conn.execute(
+            "SELECT message, command, name, state FROM task WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
             return {}
 
-        return json.loads(result)
+        message, command, name, state = row
+        if message:
+            result = json.loads(message)
+        else:
+            result = {
+                "status": state,
+                "result": None,
+                "traceback": None,
+                "date_done": False,
+                "name": name,
+                "task_id": task_id,
+            }
+
+        if command:
+            result["command"] = command
+
+        return result
 
     def set_key(
         self, task_id: str, message: dict, expire: bool | int = False
     ) -> None:
-        """set value for lock, initial or update"""
-        key: str = f"{self.BASE}{task_id}"
-        self.conn.execute_command("SET", key, json.dumps(message))
+        """set result message, initial or update"""
+        to_write = {k: v for k, v in message.items() if k != "command"}
+        expires = time.time() + self.EXPIRE if expire else None
+        with write_tx(self.conn):
+            cursor = self.conn.execute(
+                "UPDATE task SET message = ?, expires = ? WHERE task_id = ?",
+                (json.dumps(to_write), expires, task_id),
+            )
+            if cursor.rowcount:
+                return
 
-        if expire:
-            self.conn.execute_command("EXPIRE", key, self.EXPIRE)
+            self.conn.execute(
+                "INSERT INTO task "
+                + "(task_id, name, state, message, created, expires) "
+                + "VALUES (?, ?, 'DONE', ?, ?, ?)",
+                (
+                    task_id,
+                    message.get("name", ""),
+                    json.dumps(to_write),
+                    time.time(),
+                    expires,
+                ),
+            )
 
     def set_command(self, task_id: str, command: str) -> None:
         """set task command"""
@@ -239,20 +337,25 @@ class TaskRedis(RedisBase):
             print(f"{command} not in valid commands {self.COMMANDS}")
             raise ValueError
 
-        message = self.get_single(task_id)
-        if not message:
+        cursor = self.conn.execute(
+            "UPDATE task SET command = ? WHERE task_id = ?",
+            (command, task_id),
+        )
+        if not cursor.rowcount:
             print(f"{task_id} not found")
             raise KeyError
 
-        message.update({"command": command})
-        self.set_key(task_id, message)
-
     def del_task(self, task_id: str) -> None:
         """delete task result by id"""
-        self.conn.execute_command("DEL", f"{self.BASE}{task_id}")
+        self.conn.execute("DELETE FROM task WHERE task_id = ?", (task_id,))
 
     def del_all(self) -> None:
         """delete all task results"""
-        all_tasks = self.get_all()
-        for task_id in all_tasks:
-            self.del_task(task_id)
+        self.conn.execute("DELETE FROM task")
+
+    def _purge(self) -> None:
+        """remove expired tasks"""
+        self.conn.execute(
+            "DELETE FROM task WHERE expires IS NOT NULL AND expires <= ?",
+            (time.time(),),
+        )

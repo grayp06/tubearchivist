@@ -53,20 +53,19 @@ class PendingInteract:
             else:
                 must_not_list.append(exists)
 
-        if new_status == "priority":
-            source = """
-            ctx._source.status = 'pending';
-            ctx._source.auto_start = true;
-            ctx._source.message = null;
-            """
-        elif new_status == "clear_error":
-            source = "ctx._source.message = null"
-        else:
-            source = f"ctx._source.status = '{new_status}'"
+        def script(source: dict) -> None:
+            if new_status == "priority":
+                source.update(
+                    {"status": "pending", "auto_start": True, "message": None}
+                )
+            elif new_status == "clear_error":
+                source["message"] = None
+            else:
+                source["status"] = new_status
 
         data = {
             "query": {"bool": {"must": must_list, "must_not": must_not_list}},
-            "script": {"source": source, "lang": "painless"},
+            "script": script,
         }
 
         path = "ta_download/_update_by_query?refresh=true"

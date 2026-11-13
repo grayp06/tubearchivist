@@ -12,85 +12,15 @@ from appsettings.src.filesystem import Scanner
 from appsettings.src.index_setup import ElasticIndexWrap
 from appsettings.src.manual import ImportFolderScanner
 from appsettings.src.reindex import Reindex, ReindexManual, ReindexPopulate
-from celery import Task, shared_task
-from celery.exceptions import Retry
 from channel.src.index import YoutubeChannel
-from common.src.ta_redis import RedisArchivist
 from common.src.urlparser import ParsedURLType, Parser
 from download.src.queue import PendingList
 from download.src.subscriptions import SubscriptionHandler, SubscriptionScanner
 from download.src.thumbnails import ThumbValidator
 from download.src.yt_dlp_handler import VideoDownloader
-from task.src.notify import Notifications
-from task.src.task_config import TASK_CONFIG
+from task.src.runner import BaseTask, Retry, shared_task
 from task.src.task_manager import TaskManager
 from video.src.meta_embed import MetadataEmbed
-
-
-class BaseTask(Task):
-    """base class to inherit each class from"""
-
-    # pylint: disable=abstract-method
-
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
-        """callback for task failure"""
-        print(f"{task_id} Failed callback")
-        message, key = self._build_message(level="error")
-        message.update({"messages": [f"Task failed: {exc}"]})
-        RedisArchivist().set_message(key, message, expire=20)
-
-    def on_success(self, retval, task_id, args, kwargs):
-        """callback task completed"""
-        print(f"{task_id} success callback")
-        message, key = self._build_message()
-        message.update({"messages": ["Task completed"]})
-        RedisArchivist().set_message(key, message, expire=5)
-
-    def before_start(self, task_id, args, kwargs):
-        """callback before initiating task"""
-        print(f"{self.name} create callback")
-        message, key = self._build_message()
-        message.update({"messages": ["New task received."]})
-        RedisArchivist().set_message(key, message)
-
-    def after_return(self, status, retval, task_id, args, kwargs, einfo):
-        """callback after task returns"""
-        print(f"{task_id} return callback")
-        task_title = TASK_CONFIG.get(self.name).get("title")
-        Notifications(self.name).send(task_id, task_title)
-
-    def send_progress(
-        self, message_lines, progress=False, title=False, level="info"
-    ):
-        """send progress message"""
-        message, key = self._build_message(level=level)
-        message.update(
-            {
-                "messages": message_lines,
-                "progress": progress,
-            }
-        )
-        if title:
-            message["title"] = title
-
-        RedisArchivist().set_message(key, message)
-
-    def _build_message(self, level="info"):
-        """build message dict"""
-        task_id = self.request.id
-        message = TASK_CONFIG.get(self.name).copy()
-        message.update({"level": level, "id": task_id})
-        task_result = TaskManager().get_task(task_id)
-        if task_result:
-            command = task_result.get("command", None)
-            message.update({"command": command})
-
-        key = f"message:{message.get('group')}:{task_id.split('-')[0]}"
-        return message, key
-
-    def is_stopped(self):
-        """check if task is stopped"""
-        return TaskManager().is_stopped(self.request.id)
 
 
 @shared_task(name="update_subscribed", bind=True, base=BaseTask)

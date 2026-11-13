@@ -156,17 +156,17 @@ class YoutubeChannel(YouTubeItem):
             "query": {
                 "term": {"channel.channel_id": {"value": self.youtube_id}},
             },
-            "script": {
-                "lang": "painless",
-                "params": {"channel": self.json_data},
-                "source": "ctx._source.channel = params.channel",
-            },
+            "script": self._set_channel,
         }
         update_path = "ta_video/_update_by_query"
         response, status_code = ElasticWrap(update_path).post(data)
         if status_code not in [200, 201]:
             print(f"sync to videos failed with status code {status_code}")
             print(response)
+
+    def _set_channel(self, source: dict) -> None:
+        """update script to replace channel of video"""
+        source["channel"] = self.json_data
 
     def change_subscribe(self, new_subscribe_state: bool):
         """change subscribe status"""

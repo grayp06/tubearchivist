@@ -17,7 +17,6 @@ from common.src.env_settings import EnvironmentSettings
 from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import rand_sleep, requests_headers
 from download.src.yt_dlp_base import CookieHandler
-from yt_dlp.utils import orderedSet_from_options
 
 
 class SubtitleCue(TypedDict):
@@ -57,6 +56,9 @@ class YoutubeSubtitle:
 
         all_sub_langs = tuple(available_subtitles.keys())
         relevant_subtitles = False
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import orderedSet_from_options
+
         try:
             relevant_subtitles = [
                 available_subtitles[lang]

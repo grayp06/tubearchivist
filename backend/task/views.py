@@ -35,7 +35,7 @@ class TaskListView(ApiBaseView):
     def get(self, request):
         """get all stored task results"""
         # pylint: disable=unused-argument
-        all_results = TaskManager().get_all_results()
+        all_results = TaskManager().get_all_results() or []
         serializer = TaskResultSerializer(all_results, many=True)
 
         return Response(serializer.data)
@@ -64,7 +64,7 @@ class TaskNameListView(ApiBaseView):
             error = ErrorResponseSerializer({"error": "task name not found"})
             return Response(error.data, status=404)
 
-        all_results = TaskManager().get_tasks_by_name(task_name)
+        all_results = TaskManager().get_tasks_by_name(task_name) or []
         serializer = TaskResultSerializer(all_results, many=True)
 
         return Response(serializer.data)

@@ -73,9 +73,7 @@ class YouTubeItem:
             "ta_playlist": "playlist_active",
         }
         path = f"{self.index_name}/_update/{self.youtube_id}?refresh=true"
-        data = {
-            "script": f"ctx._source.{key_match.get(self.index_name)} = false"
-        }
+        data = {"doc": {key_match[self.index_name]: False}}
         _, _ = ElasticWrap(path).post(data)
 
     def del_in_es(self):

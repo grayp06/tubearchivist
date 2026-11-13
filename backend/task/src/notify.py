@@ -87,43 +87,32 @@ class Notifications:
 
     def add_url(self, url: str) -> None:
         """add url to task notification"""
-        source = (
-            "if (!ctx._source.containsKey(params.task_name)) "
-            + "{ctx._source[params.task_name] = [params.url]} "
-            + "else if (!ctx._source[params.task_name].contains(params.url)) "
-            + "{ctx._source[params.task_name].add(params.url)} "
-            + "else {ctx.op = 'none'}"
-        )
 
-        data = {
-            "script": {
-                "source": source,
-                "lang": "painless",
-                "params": {"url": url, "task_name": self.task_name},
-            },
-            "upsert": {self.task_name: [url]},
-        }
+        def script(source: dict) -> bool:
+            urls = source.setdefault(self.task_name, [])
+            if url in urls:
+                return False
 
+            urls.append(url)
+            return True
+
+        data = {"script": script, "upsert": {self.task_name: [url]}}
         _, _ = ElasticWrap(self.UPDATE_PATH).post(data)
 
     def remove_url(self, url: str) -> tuple[dict, int]:
         """remove url from task"""
-        source = (
-            "if (ctx._source.containsKey(params.task_name) "
-            + "&& ctx._source[params.task_name].contains(params.url)) "
-            + "{ctx._source[params.task_name]."
-            + "remove(ctx._source[params.task_name].indexOf(params.url))}"
+
+        def script(source: dict) -> bool:
+            urls = source.get(self.task_name) or []
+            if url not in urls:
+                return False
+
+            urls.remove(url)
+            return True
+
+        response, status_code = ElasticWrap(self.UPDATE_PATH).post(
+            {"script": script}
         )
-
-        data = {
-            "script": {
-                "source": source,
-                "lang": "painless",
-                "params": {"url": url, "task_name": self.task_name},
-            }
-        }
-
-        response, status_code = ElasticWrap(self.UPDATE_PATH).post(data)
         if not self.get_urls():
             _, _ = self.remove_task()
 
@@ -131,19 +120,13 @@ class Notifications:
 
     def remove_task(self) -> tuple[dict, int]:
         """remove all notifications from task"""
-        source = (
-            "if (ctx._source.containsKey(params.task_name)) "
-            + "{ctx._source.remove(params.task_name)}"
-        )
-        data = {
-            "script": {
-                "source": source,
-                "lang": "painless",
-                "params": {"task_name": self.task_name},
-            }
-        }
 
-        response, status_code = ElasticWrap(self.UPDATE_PATH).post(data)
+        def script(source: dict) -> bool:
+            return source.pop(self.task_name, None) is not None
+
+        response, status_code = ElasticWrap(self.UPDATE_PATH).post(
+            {"script": script}
+        )
 
         return response, status_code
 

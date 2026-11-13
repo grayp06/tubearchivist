@@ -57,20 +57,27 @@ TOPIC = """
 EXPECTED_ENV_VARS = [
     "TA_USERNAME",
     "TA_PASSWORD",
-    "ELASTIC_PASSWORD",
-    "ES_URL",
     "TA_HOST",
 ]
 FILE_FALLBACK = [
-    "ELASTIC_PASSWORD",
     "TA_PASSWORD",
 ]
 UNEXPECTED_ENV_VARS = {
     "TA_UWSGI_PORT": "Has been replaced with 'TA_BACKEND_PORT'",
-    "REDIS_HOST": "Has been replaced with 'REDIS_CON' connection string",
-    "REDIS_PORT": "Has been consolidated in 'REDIS_CON' connection string",
+    "REDIS_HOST": "Redis is not used anymore, remove the variable",
+    "REDIS_PORT": "Redis is not used anymore, remove the variable",
     "ENABLE_CAST": "That is now a toggle in setting and DISABLE_STATIC_AUTH",
 }
+IGNORED_ENV_VARS = [
+    "ES_URL",
+    "ELASTIC_PASSWORD",
+    "ELASTIC_PASSWORD_FILE",
+    "ELASTIC_USER",
+    "ES_SNAPSHOT_DIR",
+    "ES_DISABLE_VERIFY_SSL",
+    "REDIS_CON",
+    "REDIS_NAME_SPACE",
+]
 INST = "https://github.com/tubearchivist/tubearchivist#installing-and-updating"
 NGINX = "/etc/nginx/sites-available/default"
 
@@ -88,7 +95,7 @@ class Command(BaseCommand):
         self._additional_auth_vars_expectations()
         self._expected_vars()
         self._unexpected_vars()
-        self._elastic_user_overwrite()
+        self._ignored_vars()
         self._ta_port_overwrite()
         self._ta_backend_port_overwrite()
         self._disable_static_auth()
@@ -177,11 +184,17 @@ class Command(BaseCommand):
         message = "    ✓ no unexpected env vars found"
         self.stdout.write(self.style.SUCCESS(message))
 
-    def _elastic_user_overwrite(self):
-        """check for ELASTIC_USER overwrite"""
-        self.stdout.write("[3] check ES user overwrite")
-        env = EnvironmentSettings.ES_USER
-        self.stdout.write(self.style.SUCCESS(f"    ✓ ES user is set to {env}"))
+    def _ignored_vars(self):
+        """notify about env vars of external services not needed anymore"""
+        self.stdout.write("[3] check for obsolete env vars")
+        found = [i for i in IGNORED_ENV_VARS if os.environ.get(i)]
+        if not found:
+            self.stdout.write(self.style.SUCCESS("    ✓ none found"))
+            return
+
+        for env in found:
+            message = f"    {env} is set but not used, you can remove it"
+            self.stdout.write(self.style.WARNING(message))
 
     def _ta_port_overwrite(self):
         """set TA_PORT overwrite for nginx"""

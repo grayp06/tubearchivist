@@ -1,33 +1,64 @@
 """
 functionality:
-- wrapper around requests to call elastic search
-- reusable search_after to extract total index
+- route index calls to the sqlite document store
+- reusable pagination to go through a complete index
+
+ElasticWrap keeps the path based interface of the search server
+the application was built on, the calls never leave the process.
 """
 
-# pylint: disable=missing-timeout
-
-import json
+import re
 from typing import Any
+from urllib.parse import parse_qs
 
-import requests
-import urllib3
-from common.src.env_settings import EnvironmentSettings
+from common.src.index_store import IndexStore
+
+DOC_ACTIONS = ("_doc", "_create", "_update")
 
 
 class ElasticWrap:
-    """makes all calls to elastic search
-    returns response json and status code tuple
+    """makes all calls to the document store
+    returns response dict and status code tuple
     """
 
     def __init__(self, path: str):
-        self.url: str = f"{EnvironmentSettings.ES_URL}/{path}"
-        self.auth: tuple[str, str] = (
-            EnvironmentSettings.ES_USER,
-            EnvironmentSettings.ES_PASS,
-        )
+        self.url: str = path
+        path, _, query = path.partition("?")
+        self.params: dict[str, str] = {
+            k: v[0] for k, v in parse_qs(query).items()
+        }
+        self.parts: list[str] = [i for i in path.split("/") if i]
+        self.store = IndexStore()
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    @property
+    def index(self) -> str:
+        """index name of path"""
+        return re.sub(r"_v\d+$", "", self.parts[0])
+
+    @property
+    def indexes(self) -> list[str]:
+        """all index names of path"""
+        return [re.sub(r"_v\d+$", "", i) for i in self.parts[0].split(",")]
+
+    @property
+    def action(self) -> str | None:
+        """action of path"""
+        if not self.parts:
+            return "_info"
+
+        if self.parts[0].startswith("_"):
+            return self.parts[0]
+
+        if len(self.parts) == 1:
+            return "_index"
+
+        return self.parts[1]
+
+    def _unsupported(self, method: str) -> tuple[dict, int]:
+        """path is not implemented"""
+        message = f"unsupported index call: {method} {self.url}"
+        print(message)
+        return {"error": message}, 400
 
     def get(
         self,
@@ -35,121 +66,169 @@ class ElasticWrap:
         timeout: int = 10,
         print_error: bool = True,
     ) -> tuple[dict, int]:
-        """get data from es"""
+        """get data from index"""
+        # pylint: disable=unused-argument
+        body = data if isinstance(data, dict) else None
+        if self.action == "_info":
+            return {"name": "sqlite", "version": {"number": "sqlite"}}, 200
 
-        kwargs: dict[str, Any] = {
-            "auth": self.auth,
-            "timeout": timeout,
+        if self.action == "_index":
+            if self.store.index_exists(self.index):
+                return {self.index: {}}, 200
+
+            return self._not_found(print_error)
+
+        if self.action == "_doc":
+            return self._get_doc(print_error)
+
+        if self.action == "_search":
+            return self.store.search(self.indexes, body), 200
+
+        if self.action == "_count":
+            return {"count": self.store.count(self.index, body)}, 200
+
+        return self._unsupported("GET")
+
+    def _get_doc(self, print_error: bool) -> tuple[dict, int]:
+        """get single document"""
+        doc_id = self.parts[2]
+        source = self.store.get_doc(self.index, doc_id)
+        if source is None:
+            return self._not_found(print_error)
+
+        response = {
+            "_index": self.index,
+            "_id": doc_id,
+            "found": True,
+            "_source": source,
         }
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
+        return response, 200
 
-        if data:
-            kwargs["json"] = data
+    def _not_found(self, print_error: bool = True) -> tuple[dict, int]:
+        """build not found response"""
+        response: dict[str, Any] = {"found": False}
+        if len(self.parts) > 2:
+            response.update({"_index": self.index, "_id": self.parts[2]})
 
-        response = requests.get(self.url, **kwargs)
+        if print_error:
+            print(f"not found: {self.url}")
 
-        if print_error and not response.ok:
-            print(response.text)
-
-        return response.json(), response.status_code
+        return response, 404
 
     def post(
         self, data: bool | dict | str = False, ndjson: bool = False
     ) -> tuple[dict, int]:
-        """post data to es"""
+        """post data to index"""
+        if self.action == "_bulk":
+            if not ndjson or not isinstance(data, str):
+                return self._unsupported("POST")
 
-        kwargs: dict[str, Any] = {"auth": self.auth}
+            return self.store.bulk(iter(data.splitlines())), 200
 
-        if ndjson and data:
-            kwargs.update(
-                {
-                    "headers": {"Content-type": "application/x-ndjson"},
-                    "data": data,
-                }
-            )
-        elif data:
-            kwargs.update(
-                {
-                    "headers": {"Content-type": "application/json"},
-                    "data": json.dumps(data),
-                }
-            )
+        if self.action == "_refresh":
+            return {}, 200
 
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
+        body: dict = data if isinstance(data, dict) else {}
+        if self.action == "_search":
+            return self.store.search(self.indexes, body), 200
 
-        response = requests.post(self.url, **kwargs)
+        if self.action == "_count":
+            return {"count": self.store.count(self.index, body)}, 200
 
-        if not response.ok:
-            print(response.text)
+        if self.action in ("_doc", "_create"):
+            return self._index_doc(body)
 
-        return response.json(), response.status_code
+        if self.action == "_update":
+            return self._update_doc(body)
+
+        if self.action == "_update_by_query":
+            updated = self.store.update_by_query(self.index, body)
+            return {"updated": updated, "failures": []}, 200
+
+        if self.action == "_delete_by_query":
+            deleted = self.store.delete_by_query(self.index, body)
+            return {"deleted": deleted, "failures": []}, 200
+
+        return self._unsupported("POST")
+
+    def _index_doc(self, body: dict) -> tuple[dict, int]:
+        """index single document"""
+        doc_id = self.parts[2]
+        created = self.store.index_doc(self.index, doc_id, body)
+        response = {
+            "_index": self.index,
+            "_id": doc_id,
+            "result": "created" if created else "updated",
+        }
+
+        return response, 201 if created else 200
+
+    def _update_doc(self, body: dict) -> tuple[dict, int]:
+        """partial update single document"""
+        doc_id = self.parts[2]
+        result = self.store.update_doc(self.index, doc_id, body)
+        response = {"_index": self.index, "_id": doc_id, "result": result}
+        if result == "not_found":
+            print(f"document missing: {self.url}")
+            return response, 404
+
+        return response, 201 if result == "created" else 200
 
     def put(
         self,
         data: bool | dict = False,
         refresh: bool = False,
     ) -> tuple[dict, Any]:
-        """put data to es"""
+        """put data to index"""
+        # pylint: disable=unused-argument
+        if self.action == "_index":
+            self.store.create_index(self.index)
+            return {"acknowledged": True, "index": self.index}, 200
 
-        if refresh:
-            self.url = f"{self.url}/?refresh=true"
+        if self.action in ("_doc", "_create") and isinstance(data, dict):
+            return self._index_doc(data)
 
-        kwargs: dict[str, Any] = {
-            "json": data,
-            "auth": self.auth,
-        }
-
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
-
-        response = requests.put(self.url, **kwargs)
-
-        if not response.ok:
-            print(response.text)
-            print(data)
-            raise ValueError("failed to add item to index")
-
-        return response.json(), response.status_code
+        print(data)
+        raise ValueError(f"failed to add item to index: PUT {self.url}")
 
     def delete(
         self,
         data: bool | dict = False,
         refresh: bool = False,
     ) -> tuple[dict, Any]:
-        """delete document from es"""
+        """delete document from index"""
+        # pylint: disable=unused-argument
+        if self.action == "_index":
+            self.store.delete_index(self.index)
+            return {"acknowledged": True}, 200
 
-        if refresh:
-            self.url = f"{self.url}/?refresh=true"
+        if self.action == "_doc":
+            deleted = self.store.delete_doc(self.index, self.parts[2])
+            if not deleted:
+                return self._not_found()
 
-        kwargs: dict[str, Any] = {"auth": self.auth}
+            response = {
+                "_index": self.index,
+                "_id": self.parts[2],
+                "result": "deleted",
+            }
+            return response, 200
 
-        if data:
-            kwargs["json"] = data
-
-        if EnvironmentSettings.ES_DISABLE_VERIFY_SSL:
-            kwargs["verify"] = False
-
-        response = requests.delete(self.url, **kwargs)
-
-        if not response.ok:
-            print(response.text)
-
-        return response.json(), response.status_code
+        return self._unsupported("DELETE")
 
 
 class IndexPaginate:
-    """use search_after to go through whole index
+    """go through all results of a query
     kwargs:
     - size: int, overwrite DEFAULT_SIZE
-    - keep_source: bool, keep _source key from es results
+    - keep_source: bool, keep _source key from results
     - callback: obj, Class implementing run method callback for every loop
     - task: task object to send notification
     - total: int, total items in index for progress message
-    - timeout: int, overwrite timeout in get request
-    - pit_keep_alive: int, overwrite pit valid
+
+    Results are only collected and returned if there is no callback,
+    to keep memory usage flat while processing a complete index.
     """
 
     DEFAULT_SIZE = 500
@@ -157,82 +236,39 @@ class IndexPaginate:
     def __init__(self, index_name, data, **kwargs):
         self.index_name = index_name
         self.data = data
-        self.pit_id = False
         self.kwargs = kwargs
 
     def get_results(self):
         """get all results, add task and total for notifications"""
-        self.get_pit()
-        self.validate_data()
-        all_results = self.run_loop()
-        self.clean_pit()
-        return all_results
-
-    def get_pit(self):
-        """get pit for index"""
-        keep_alive = self.kwargs.get("pit_keep_alive", 15)
-        path = f"{self.index_name}/_pit?keep_alive={keep_alive}m"
-        response, _ = ElasticWrap(path).post()
-        self.pit_id = response["id"]
-
-    def validate_data(self):
-        """add pit and size to data"""
-        if not self.data:
-            self.data = {}
-
-        if "query" not in self.data.keys():
-            self.data.update({"query": {"match_all": {}}})
-
-        if "sort" not in self.data.keys():
-            self.data.update({"sort": [{"_doc": {"order": "desc"}}]})
-
-        self.data["size"] = self.kwargs.get("size") or self.DEFAULT_SIZE
-        self.data["pit"] = {"id": self.pit_id, "keep_alive": "15m"}
-
-    def run_loop(self):
-        """loop through results until last hit"""
+        size = self.kwargs.get("size") or self.DEFAULT_SIZE
+        callback = self.kwargs.get("callback")
+        store = IndexStore()
         all_results = []
+        processed = 0
         counter = 0
-        while True:
-            get_kwargs = {"data": self.data}
-            if timeout_overwrite := self.kwargs.get("timeout"):
-                get_kwargs.update({"timeout": timeout_overwrite})
-
-            response, _ = ElasticWrap("_search").get(**get_kwargs)
-            all_hits = response["hits"]["hits"]
-            if not all_hits:
-                break
-
-            for hit in all_hits:
-                if self.kwargs.get("keep_source"):
-                    all_results.append(hit)
+        for index in self.index_name.split(","):
+            for all_hits in store.scan(index, self.data, size=size):
+                processed += len(all_hits)
+                if callback:
+                    callback(all_hits, self.index_name, counter=counter).run()
+                elif self.kwargs.get("keep_source"):
+                    all_results.extend(all_hits)
                 else:
-                    all_results.append(hit["_source"])
+                    all_results.extend(i["_source"] for i in all_hits)
 
-            if self.kwargs.get("callback"):
-                self.kwargs.get("callback")(
-                    all_hits, self.index_name, counter=counter
-                ).run()
+                if self.kwargs.get("task"):
+                    print(f"{self.index_name}: processing page {counter}")
+                    self._notify(processed)
 
-            if self.kwargs.get("task"):
-                print(f"{self.index_name}: processing page {counter}")
-                self._notify(len(all_results))
-
-            counter += 1
-
-            # update search_after with last hit data
-            self.data["search_after"] = all_hits[-1]["sort"]
+                counter += 1
 
         return all_results
 
     def _notify(self, processed):
         """send notification on task"""
         total = self.kwargs.get("total")
-        progress = processed / total
+        progress = processed / total if total else 0
         index_clean = self.index_name.lstrip("ta_").title()
         message = [f"Processing {index_clean}s {processed}/{total}"]
         self.kwargs.get("task").send_progress(message, progress=progress)
 
-    def clean_pit(self):
-        """delete pit from elastic search"""
-        ElasticWrap("_pit").delete(data={"id": self.pit_id})

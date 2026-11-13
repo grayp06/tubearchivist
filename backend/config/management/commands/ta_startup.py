@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from random import randint
 from time import sleep
+from typing import Callable
 
 from appsettings.src.config import AppConfig, ReleaseVersion
 from appsettings.src.index_setup import ElasticIndexWrap
@@ -15,18 +16,17 @@ from appsettings.src.snapshot import ElasticSnapshot
 from channel.src.index import YoutubeChannel
 from common.src.env_settings import EnvironmentSettings
 from common.src.es_connect import ElasticWrap, IndexPaginate
-from common.src.helper import clear_dl_cache, get_channels
+from common.src.index_store import IndexStore
+from common.src.helper import clear_dl_cache
 from common.src.ta_redis import RedisArchivist
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import dateformat
-from django_celery_beat.models import CrontabSchedule, PeriodicTasks
 from task.models import CustomPeriodicTask
 from task.src.config_schedule import ScheduleBuilder
 from task.src.task_manager import TaskManager
 from task.tasks import version_check
 from video.src.constants import VideoTypeEnum
-from video.src.index import YoutubeVideo
 
 TOPIC = """
 
@@ -51,7 +51,6 @@ class Command(BaseCommand):
         self._index_setup()
         self._snapshot_check()
         self._create_default_schedules()
-        self._update_schedule_tz()
         self._init_app_config()
         self._set_ta_startup_time()
 
@@ -115,8 +114,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("    ✓ expected folders created"))
 
     def _clear_redis_keys(self):
-        """make sure there are no leftover locks or keys set in redis"""
-        self.stdout.write("[2] clear leftover keys in redis")
+        """make sure there are no leftover locks or keys set"""
+        self.stdout.write("[2] clear leftover keys in state store")
         all_keys = [
             "dl_queue_id",
             "dl_queue",
@@ -193,9 +192,11 @@ class Command(BaseCommand):
         ElasticIndexWrap().setup()
 
     def _snapshot_check(self):
-        """migration setup snapshots"""
+        """prepare snapshot folder, snapshots are taken by the dispatcher"""
         self.stdout.write("[7] setup snapshots")
-        ElasticSnapshot().setup()
+        os.makedirs(ElasticSnapshot.SNAPSHOT_DIR, exist_ok=True)
+        IndexStore().optimize()
+        self.stdout.write(self.style.SUCCESS("    ✓ snapshot folder ready"))
 
     def _create_default_schedules(self) -> None:
         """create default schedules for new installations"""
@@ -248,27 +249,9 @@ class Command(BaseCommand):
             self.style.SUCCESS("    ✓ all default schedules created")
         )
 
-    def _update_schedule_tz(self) -> None:
-        """update timezone for Schedule instances"""
-        self.stdout.write("[9] validate schedules TZ")
-        tz = EnvironmentSettings.TZ
-        to_update = CrontabSchedule.objects.exclude(timezone=tz)
-
-        if not to_update.exists():
-            self.stdout.write(
-                self.style.SUCCESS("    all schedules have correct TZ")
-            )
-            return
-
-        updated = to_update.update(timezone=tz)
-        self.stdout.write(
-            self.style.SUCCESS(f"    ✓ updated {updated} schedules to {tz}.")
-        )
-        PeriodicTasks.update_changed()
-
     def _init_app_config(self) -> None:
-        """init default app config to ES"""
-        self.stdout.write("[10] Check AppConfig")
+        """init default app config"""
+        self.stdout.write("[9] Check AppConfig")
         response, status_code = ElasticWrap("ta_config/_doc/appsettings").get()
         if status_code in [200, 201]:
             self.stdout.write(
@@ -306,7 +289,7 @@ class Command(BaseCommand):
 
     def _set_ta_startup_time(self) -> None:
         """set startup time to trigger frontend refresh, threadsafe"""
-        self.stdout.write("[11] Set startup timestamp")
+        self.stdout.write("[10] Set startup timestamp")
         message = str(int(datetime.now().timestamp() // 10 * 10))
         RedisArchivist().set_message(
             "STARTTIMESTAMP", message=message, save=True
@@ -317,6 +300,10 @@ class Command(BaseCommand):
 
     def _mig_add_default_playlist_sort(self) -> None:
         """migrate from 0.5.4 to 0.5.5 set default playlist sortorder"""
+
+        def script(source: dict) -> None:
+            source["playlist_sort_order"] = "top"
+
         self._run_migration(
             index_name="ta_playlist",
             desc="set default playlist sort order",
@@ -325,30 +312,31 @@ class Command(BaseCommand):
                     "must_not": [{"exists": {"field": "playlist_sort_order"}}]
                 }
             },
-            script={
-                "source": "ctx._source.playlist_sort_order = 'top'",
-                "lang": "painless",
-            },
+            script=script,
         )
 
     def _mig_set_channel_tabs(self) -> None:
         """migrate from 0.5.4 to 0.5.5 set initial channel tabs"""
-        tabs = VideoTypeEnum.values_known()
+
+        def script(source: dict) -> None:
+            source["channel_tabs"] = VideoTypeEnum.values_known()
+
         self._run_migration(
             index_name="ta_channel",
             desc="set default channel_tabs in channel index",
             query={
                 "bool": {"must_not": [{"exists": {"field": "channel_tabs"}}]}
             },
-            script={
-                "source": f"ctx._source.channel_tabs = {tabs}",
-                "lang": "painless",
-            },
+            script=script,
         )
 
     def _mig_set_video_channel_tabs(self) -> None:
         """migrate from 0.5.4 to 0.5.5 set initial video channel tabs"""
-        tabs = VideoTypeEnum.values_known()
+
+        def script(source: dict) -> None:
+            channel = source.setdefault("channel", {})
+            channel["channel_tabs"] = VideoTypeEnum.values_known()
+
         self._run_migration(
             index_name="ta_video",
             desc="set default channel_tabs for videos",
@@ -357,22 +345,20 @@ class Command(BaseCommand):
                     "must_not": [{"exists": {"field": "channel.channel_tabs"}}]
                 }
             },
-            script={
-                "source": f"ctx._source.channel.channel_tabs = {tabs}",
-                "lang": "painless",
-            },
+            script=script,
         )
 
     def _mig_fix_playlist_description(self) -> None:
         """migrate from 0.5.8 to 0.5.9 fix playlist desc null data type"""
+
+        def script(source: dict) -> None:
+            source.pop("playlist_description", None)
+
         self._run_migration(
             index_name="ta_playlist",
             desc="fix playlist description data type",
             query={"term": {"playlist_description": {"value": False}}},
-            script={
-                "source": "ctx._source.remove('playlist_description')",
-                "lang": "painless",
-            },
+            script=script,
         )
 
     def _mig_fix_missing_stats(self) -> None:
@@ -384,6 +370,10 @@ class Command(BaseCommand):
             "dislike_count",
         ]
         for field in fields:
+
+            def script(source: dict, field: str = field) -> None:
+                source.setdefault("stats", {})[field] = 0
+
             self._run_migration(
                 index_name="ta_video",
                 desc=f"fix missing stats field {field}",
@@ -392,10 +382,7 @@ class Command(BaseCommand):
                         "must_not": [{"exists": {"field": f"stats.{field}"}}]
                     }
                 },
-                script={
-                    "source": f"ctx._source.stats.{field} = 0",
-                    "lang": "painless",
-                },
+                script=script,
             )
 
     def _mig_fix_channel_art_types(self) -> None:
@@ -406,38 +393,38 @@ class Command(BaseCommand):
             "channel_tvart_url",
         ]
         for field in fields:
+
+            def script(source: dict, field: str = field) -> None:
+                source.pop(field, None)
+
+            def video_script(source: dict, field: str = field) -> None:
+                if isinstance(source.get("channel"), dict):
+                    source["channel"].pop(field, None)
+
             self._run_migration(
                 index_name="ta_channel",
                 desc=f"fix missing data type for field {field}",
                 query={"term": {field: {"value": False}}},
-                script={
-                    "source": f"ctx._source.remove('{field}')",
-                    "lang": "painless",
-                },
+                script=script,
             )
-            source = f"""
-                if (ctx._source.containsKey('channel'))
-                {{ctx._source.channel.remove('{field}');}}
-            """
             self._run_migration(
                 index_name="ta_video",
                 desc=f"fix missing data type for field channel.{field}",
                 query={"term": {f"channel.{field}": {"value": False}}},
-                script={"source": source, "lang": "painless"},
+                script=video_script,
             )
 
     def _mig_fix_channel_description(self) -> None:
         """migrate from 0.5.8 to 0.5.9, fix channel desc null value"""
         desc = "fix channel description null value"
         self.stdout.write(f"[MIGRATION] run {desc}")
-        channels = get_channels(
-            subscribed_only=False, source=["channel_description", "channel_id"]
-        )
+        data = {
+            "query": {"term": {"channel_description": {"value": ""}}},
+            "_source": ["channel_id"],
+        }
+        channels = IndexPaginate("ta_channel", data=data).get_results()
         counter = 0
         for channel_response in channels:
-            if not channel_response.get("channel_description") == "":
-                continue
-
             channel = YoutubeChannel(youtube_id=channel_response["channel_id"])
             channel.get_from_es()
             channel.json_data.pop("channel_description")
@@ -454,33 +441,19 @@ class Command(BaseCommand):
 
     def _mig_fix_video_description(self) -> None:
         """migrate from 0.5.8 to 0.5.9, fix video desc null value"""
-        desc = "fix video description null value"
-        self.stdout.write(f"[MIGRATION] run {desc}")
 
-        data = {"_source": ["youtube_id", "description"]}
-        videos = IndexPaginate("ta_video", data=data).get_results()
+        def script(source: dict) -> None:
+            source.pop("description", None)
 
-        counter = 0
-        for video_response in videos:
-            if not video_response.get("description") == "":
-                continue
-
-            video = YoutubeVideo(youtube_id=video_response["youtube_id"])
-            video.get_from_es()
-            video.json_data.pop("description")
-            video.upload_to_es()
-
-            counter += 1
-
-        if counter:
-            suc_msg = f"    ✓ updated {counter} videos"
-            self.stdout.write(self.style.SUCCESS(suc_msg))
-        else:
-            noop_msg = "    no items needed updating"
-            self.stdout.write(self.style.SUCCESS(noop_msg))
+        self._run_migration(
+            index_name="ta_video",
+            desc="fix video description null value",
+            query={"term": {"description": {"value": ""}}},
+            script=script,
+        )
 
     def _run_migration(
-        self, index_name: str, desc: str, query: dict, script: dict
+        self, index_name: str, desc: str, query: dict, script: Callable
     ):
         """run migration"""
         self.stdout.write(f"[MIGRATION] run {desc}")

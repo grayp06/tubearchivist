@@ -262,10 +262,7 @@ class VideoDownloader(DownloaderBase):
         path = "ta_download/_update_by_query"
         data = {
             "query": {"term": {"auto_start": {"value": True}}},
-            "script": {
-                "source": "ctx._source.auto_start = false",
-                "lang": "painless",
-            },
+            "script": lambda source: source.update({"auto_start": False}),
         }
         response, _ = ElasticWrap(path).post(data=data)
         updated = response.get("updated")

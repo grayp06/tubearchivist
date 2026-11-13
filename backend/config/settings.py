@@ -48,7 +48,6 @@ CORS_ALLOWED_ORIGINS = CSRF_TRUSTED_ORIGINS
 # Application definition
 
 INSTALLED_APPS = [
-    "django_celery_beat",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -113,6 +112,15 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": DB_PATH,
+        "OPTIONS": {
+            "timeout": 60,
+            "transaction_mode": "IMMEDIATE",
+            "init_command": (
+                "PRAGMA journal_mode=WAL;"
+                "PRAGMA synchronous=NORMAL;"
+                f"PRAGMA cache_size=-{EnvironmentSettings.DB_CACHE_KB};"
+            ),
+        },
     }
 }
 
@@ -224,9 +232,9 @@ TA_UPSTREAM = "https://github.com/tubearchivist/tubearchivist"
 TA_VERSION = "v0.5.10"
 try:
     TA_START = RedisArchivist().get_message_str("STARTTIMESTAMP")
-except ValueError:
+except (ValueError, OSError):
     # fails in unittests bootstrap
-    pass
+    TA_START = None
 
 # API
 REST_FRAMEWORK = {
