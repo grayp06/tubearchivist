@@ -64,6 +64,7 @@ class PendingIndex:
         data = {
             "query": {"match_all": {}},
             "sort": [{"published": {"order": "desc"}}],
+            "_source": ["youtube_id"],
         }
         self.all_videos = IndexPaginate("ta_video", data).get_results()
         for video in self.all_videos:
