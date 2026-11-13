@@ -17,6 +17,7 @@ from pathlib import Path
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import ta_host_parser
 from common.src.ta_redis import RedisArchivist
+from common.src.ytdlp_path import activate_update
 from corsheaders.defaults import default_headers
 
 try:
@@ -26,6 +27,9 @@ try:
 except ModuleNotFoundError:
     pass
 
+
+# use the yt-dlp version installed by the scheduled update, if any
+activate_update()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent

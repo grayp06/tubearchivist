@@ -18,6 +18,7 @@ from download.src.queue import PendingList
 from download.src.subscriptions import SubscriptionHandler, SubscriptionScanner
 from download.src.thumbnails import ThumbValidator
 from download.src.yt_dlp_handler import VideoDownloader
+from download.src.ytdlp_update import YtDlpUpdate
 from task.src.runner import BaseTask, Retry, shared_task
 from task.src.task_manager import TaskManager
 from video.src.meta_embed import MetadataEmbed
@@ -257,3 +258,17 @@ def index_channel_playlists(self, channel_id):
 def version_check():
     """check for new updates"""
     ReleaseVersion().check()
+
+
+@shared_task(bind=True, name="update_ytdlp", base=BaseTask)
+def update_ytdlp(self):
+    """look for a new yt-dlp version and install it"""
+    manager = TaskManager()
+    if manager.is_pending(self):
+        print(f"[task][{self.name}] yt-dlp update is already running")
+        self.send_progress(["yt-dlp update is already running."])
+        return None
+
+    manager.init(self)
+
+    return YtDlpUpdate(task=self).run()

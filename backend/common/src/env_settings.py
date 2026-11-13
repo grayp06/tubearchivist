@@ -64,6 +64,11 @@ class EnvironmentSettings:
     # SQLite page cache per connection in KiB
     DB_CACHE_KB: int = int(environ.get("TA_DB_CACHE_KB") or 2048)
 
+    # yt-dlp updates: release, nightly or off
+    YTDLP_UPDATE_CHANNEL: str = str(
+        environ.get("TA_AUTO_UPDATE_YTDLP") or "release"
+    ).lower()
+
     # background tasks
     TASK_CONCURRENCY: int = int(environ.get("TA_TASK_CONCURRENCY") or 2)
     WEB_THREADS: int = int(environ.get("TA_WEB_THREADS") or 4)
@@ -106,7 +111,8 @@ class EnvironmentSettings:
         print(f"""
             TA_DB_CACHE_KB: {self.DB_CACHE_KB}
             TA_TASK_CONCURRENCY: {self.TASK_CONCURRENCY}
-            TA_WEB_THREADS: {self.WEB_THREADS}""")
+            TA_WEB_THREADS: {self.WEB_THREADS}
+            TA_AUTO_UPDATE_YTDLP: {self.YTDLP_UPDATE_CHANNEL}""")
 
     def print_all(self):
         """print all"""

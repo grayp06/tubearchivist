@@ -5,7 +5,7 @@ Functionality:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from random import randint
 from time import sleep
 from typing import Callable
@@ -20,6 +20,7 @@ from common.src.index_store import IndexStore
 from common.src.helper import clear_dl_cache
 from common.src.ta_redis import RedisArchivist
 from django.conf import settings
+from download.src.ytdlp_update import YtDlpUpdate
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import dateformat
 from task.models import CustomPeriodicTask
@@ -51,6 +52,7 @@ class Command(BaseCommand):
         self._index_setup()
         self._snapshot_check()
         self._create_default_schedules()
+        self._ytdlp_update_setup()
         self._init_app_config()
         self._set_ta_startup_time()
 
@@ -247,6 +249,55 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS("    ✓ all default schedules created")
+        )
+
+    def _ytdlp_update_setup(self) -> None:
+        """make sure yt-dlp gets updated on a schedule without user action"""
+        self.stdout.write("[8.1] setup automatic yt-dlp updates")
+        handler = YtDlpUpdate()
+        removed = handler.remove_outdated()
+        if removed:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"    ✓ removed outdated yt-dlp update {removed}"
+                )
+            )
+
+        status = handler.get_status()
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"    yt-dlp version in use: {status['version']}, "
+                + f"update channel: {status['channel']}"
+            )
+        )
+        if not handler.is_enabled:
+            self.stdout.write(
+                self.style.SUCCESS("    automatic yt-dlp updates are off")
+            )
+            return
+
+        # only once, to respect a schedule removed by the user later
+        init_key = "ytdlp:schedule_init"
+        redis_con = RedisArchivist()
+        if redis_con.get_message_str(init_key):
+            self.stdout.write(
+                self.style.SUCCESS("    schedule init already done")
+            )
+            return
+
+        builder = ScheduleBuilder()
+        daily_random = f"{randint(0, 59)} {randint(1, 5)} *"
+        update_task = builder.get_set_task("update_ytdlp", daily_random)
+        # look for an update right after the first start
+        update_task.last_run_at = dateformat.make_aware(
+            datetime.now() - timedelta(days=2)
+        )
+        update_task.save()
+        redis_con.set_message(init_key, "done")
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"    ✓ created new default schedule: {update_task}"
+            )
         )
 
     def _init_app_config(self) -> None:

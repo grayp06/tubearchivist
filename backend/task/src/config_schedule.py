@@ -21,6 +21,7 @@ class ScheduleBuilder:
         "thumbnail_check": "0 17 *",
         "run_backup": "0 18 0",
         "version_check": "0 11 *",
+        "update_ytdlp": "0 4 *",
     }
     MSG = "message:setting"
 
