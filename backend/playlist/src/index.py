@@ -4,7 +4,6 @@ functionality:
 - index and update in es
 """
 
-import json
 from datetime import datetime
 
 from common.src.env_settings import EnvironmentSettings
@@ -168,7 +167,9 @@ class YoutubePlaylist(YouTubeItem):
 
     def add_vids_to_playlist(self):
         """sync the playlist id to videos"""
-        video_ids = [i["youtube_id"] for i in self.json_data["playlist_entries"]]
+        video_ids = [
+            i["youtube_id"] for i in self.json_data["playlist_entries"]
+        ]
         if not video_ids:
             return
 

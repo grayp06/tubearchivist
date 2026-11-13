@@ -227,7 +227,9 @@ class IndexStore:
         if not self._table(index):
             return 0
 
-        where = QueryCompiler(self.conn, index).compile((body or {}).get("query"))
+        where = QueryCompiler(self.conn, index).compile(
+            (body or {}).get("query")
+        )
         row = self.conn.execute(
             f"SELECT COUNT(*) FROM {index} WHERE {where.sql}", where.params
         ).fetchone()
@@ -290,7 +292,8 @@ class IndexStore:
 
         if len(indexes) > 1:
             hits.sort(key=lambda i: i["_score"] or 0, reverse=True)
-            hits = hits[offset : offset + size]
+            end = offset + size
+            hits = hits[offset:end]
 
         response.update(
             {
@@ -412,7 +415,8 @@ class IndexStore:
     def _chunks(rowids: array | list, size: int) -> Iterator[list[int]]:
         """split rowids into chunks"""
         for start in range(0, len(rowids), size):
-            yield list(rowids[start : start + size])
+            end = start + size
+            yield list(rowids[start:end])
 
     def _load(
         self, index: str, rowids: list[int], source_filter: Any = True

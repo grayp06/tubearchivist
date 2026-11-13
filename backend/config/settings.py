@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
 import hashlib
+import sqlite3
 from os import environ, path
 from pathlib import Path
 
@@ -236,7 +237,7 @@ TA_UPSTREAM = "https://github.com/tubearchivist/tubearchivist"
 TA_VERSION = "v0.5.10"
 try:
     TA_START = RedisArchivist().get_message_str("STARTTIMESTAMP")
-except (ValueError, OSError):
+except (ValueError, OSError, sqlite3.Error):
     # fails in unittests bootstrap
     TA_START = None
 

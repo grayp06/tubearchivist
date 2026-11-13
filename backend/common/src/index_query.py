@@ -7,6 +7,7 @@ functionality:
 import json
 import re
 import sqlite3
+import textwrap
 from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
@@ -228,7 +229,9 @@ class QueryCompiler:
 
         shoulds = self._compile_list(body.get("should"))
         if shoulds and not musts:
-            parts.append("(" + " OR ".join(f"({i.sql})" for i in shoulds) + ")")
+            parts.append(
+                "(" + " OR ".join(f"({i.sql})" for i in shoulds) + ")"
+            )
             for clause in shoulds:
                 params.extend(clause.params)
 
@@ -464,7 +467,9 @@ class QueryCompiler:
 
     def _stem(self, term: str) -> str:
         """stem term the same way the full text index does"""
-        self.conn.execute("INSERT INTO temp.ta_stem (term) VALUES (?)", (term,))
+        self.conn.execute(
+            "INSERT INTO temp.ta_stem (term) VALUES (?)", (term,)
+        )
         row = self.conn.execute(
             "SELECT term FROM temp.ta_stem_vocab LIMIT 1"
         ).fetchone()
@@ -482,9 +487,7 @@ class QueryCompiler:
         for variant in {term, self._stem(term)}:
             # one of the pieces needs to be unchanged in a similar term
             size = max(len(variant) // (limit + 1), 1)
-            pieces = [
-                variant[i : i + size] for i in range(0, len(variant), size)
-            ][: limit + 1]
+            pieces = textwrap.wrap(variant, size)[: limit + 1]
             piece_sql = " OR ".join("instr(term, ?) > 0" for _ in pieces)
             rows = self.conn.execute(
                 f"SELECT term, doc FROM {fts_table(self.index)}_vocab "
@@ -721,7 +724,8 @@ class Aggregator:
             key_values = row[: len(keys)]
             bucket = self._bucket_keys(refs, key_values, multi=kw["multi"])
             bucket["doc_count"] = row[len(keys)]
-            for name, value in zip(metrics, row[len(keys) + 1 :]):
+            first_metric = len(keys) + 1
+            for name, value in zip(metrics, row[first_metric:]):
                 bucket[name] = {"value": value}
 
             other = {k: v for k, v in sub_aggs.items() if k not in metrics}
@@ -797,9 +801,7 @@ class Aggregator:
         ref = resolve_field(self.index, body["field"])
         zone = ZoneInfo(body.get("time_zone", "UTC"))
         metrics = {k: v for k, v in sub_aggs.items() if self._is_metric(v)}
-        fields = [
-            self._metric_field(i).value_expr() for i in metrics.values()
-        ]
+        fields = [self._metric_field(i).value_expr() for i in metrics.values()]
         select = ", ".join([ref.value_expr()] + fields)
         rows = self.conn.execute(
             f"SELECT {select} FROM {self.index} "

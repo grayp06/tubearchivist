@@ -114,6 +114,9 @@ class ImportFolderScanner:
 
     def _detect_base_name(self, file_path):
         """extract base_name and ext for matching"""
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import ISO639Utils
+
         base_name_raw, ext = os.path.splitext(file_path)
         base_name, ext2 = os.path.splitext(base_name_raw)
 

@@ -9,8 +9,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from common.src.ta_redis import RedisBase
 from common.src.sqlite_conn import write_tx
+from common.src.ta_redis import RedisBase
 
 
 class TaskQueue(RedisBase):

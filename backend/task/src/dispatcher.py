@@ -128,7 +128,10 @@ class Dispatcher(threading.Thread):
             self.last_schedule = time.monotonic()
             Scheduler().run_due()
 
-        if time.monotonic() - self.last_housekeeping >= self.HOUSEKEEPING_INTERVAL:
+        if (
+            time.monotonic() - self.last_housekeeping
+            >= self.HOUSEKEEPING_INTERVAL
+        ):
             self.last_housekeeping = time.monotonic()
             self.housekeeping()
 

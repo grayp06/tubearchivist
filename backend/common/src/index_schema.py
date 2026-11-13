@@ -182,7 +182,7 @@ def resolve_field(index: str, field: str) -> FieldRef:
         if path == candidate:
             array = candidate
         elif path.startswith(f"{candidate}."):
-            array, sub = candidate, path[len(candidate) + 1 :]
+            array, sub = candidate, path.removeprefix(f"{candidate}.")
 
     json_path(path)
 

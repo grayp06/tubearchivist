@@ -12,6 +12,7 @@ export type TaskScheduleNameType =
   | 'thumbnail_check'
   | 'index_playlists'
   | 'subscribe_to'
+  | 'update_ytdlp'
   | 'version_check';
 
 type ScheduleConfigType = {

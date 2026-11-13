@@ -51,5 +51,7 @@ class Migration(migrations.Migration):
                 ("task_config", models.JSONField(default=dict)),
             ],
         ),
-        migrations.RunPython(import_legacy_schedules, migrations.RunPython.noop),
+        migrations.RunPython(
+            import_legacy_schedules, migrations.RunPython.noop
+        ),
     ]

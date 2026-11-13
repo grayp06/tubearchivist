@@ -32,7 +32,6 @@ class LazyYtDlp:
 yt_dlp = LazyYtDlp()
 
 
-
 class YtWrap:
     """wrap calls to yt"""
 

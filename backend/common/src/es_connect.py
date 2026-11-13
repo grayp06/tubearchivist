@@ -271,4 +271,3 @@ class IndexPaginate:
         index_clean = self.index_name.lstrip("ta_").title()
         message = [f"Processing {index_clean}s {processed}/{total}"]
         self.kwargs.get("task").send_progress(message, progress=progress)
-

@@ -148,7 +148,8 @@ class ElasticSnapshot:
 
     def _parse_single_snapshot(self, snapshot_id, file_path):
         """build metadata of single snapshot"""
-        stamp = snapshot_id[len(self.POLICY) + 1 :]
+        prefix_len = len(self.POLICY) + 1
+        stamp = snapshot_id[prefix_len:]
         started = datetime.strptime(stamp, self.STAMP_FORMAT)
         started = started.replace(tzinfo=self.zone)
         end_stamp = int(os.path.getmtime(file_path))
@@ -169,7 +170,9 @@ class ElasticSnapshot:
         now = datetime.now(tz=self.zone)
         snap_dicts = self._get_all_snapshots()
         if snap_dicts:
-            last = datetime.fromtimestamp(snap_dicts[0]["end_stamp"], self.zone)
+            last = datetime.fromtimestamp(
+                snap_dicts[0]["end_stamp"], self.zone
+            )
             next_exec_date = max(last + timedelta(days=1), now)
         else:
             next_exec_date = now

@@ -61,9 +61,10 @@ def parse_field(
             if names and end < start:
                 # named range wrapping around the week, like sat-sun
                 end += 7
+        elif step_str:
+            raise ValueError(f"step needs a range or '*' in '{part}'")
         else:
-            start = _parse_number(base, names)
-            end = max_value if step_str else start
+            start = end = _parse_number(base, names)
 
         if start > end or start < min_value or end > max_value:
             raise ValueError(f"'{part}' out of range {min_value}-{max_value}")

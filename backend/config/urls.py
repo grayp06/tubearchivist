@@ -18,7 +18,6 @@ from django.contrib import admin
 from django.urls import include, path
 
 
-
 def schema_view(request, *args, **kwargs):
     """api schema, loaded on first use to keep memory usage low"""
     # pylint: disable=import-outside-toplevel
