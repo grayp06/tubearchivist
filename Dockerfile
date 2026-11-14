@@ -26,7 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # install requirements
 COPY ./backend/requirements.txt /requirements.txt
 COPY ./backend/build-constraints.txt /build-constraints.txt
-RUN PIP_CONSTRAINT=/build-constraints.txt pip install --user -r requirements.txt
+# older pip reads PIP_CONSTRAINT for build environments, newer PIP_BUILD_CONSTRAINT
+RUN PIP_CONSTRAINT=/build-constraints.txt PIP_BUILD_CONSTRAINT=/build-constraints.txt \
+    pip install --user -r requirements.txt
 
 # build ffmpeg
 FROM python:3.13.11-slim-trixie AS ffmpeg-builder

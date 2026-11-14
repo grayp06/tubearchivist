@@ -37,7 +37,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          PIP_CONSTRAINT="$PWD/backend/build-constraints.txt" pip install -r requirements-dev.txt
+          export PIP_CONSTRAINT="$PWD/backend/build-constraints.txt"
+          export PIP_BUILD_CONSTRAINT="$PIP_CONSTRAINT"
+          pip install -r requirements-dev.txt
 
       - name: Run unit tests
         run: pytest backend
