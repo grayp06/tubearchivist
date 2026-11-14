@@ -1,7 +1,6 @@
 """
 Functionality:
-- read and write application config backed by ES
-- encapsulate persistence of application properties
+- read application settings driven from the environment
 """
 
 from os import environ, path
@@ -62,20 +61,17 @@ class EnvironmentSettings:
     APP_DIR: str = str(environ.get("TA_APP_DIR", "/app"))
     CACHE_DIR: str = str(environ.get("TA_CACHE_DIR", "/cache"))
 
-    # Redis
-    REDIS_CON: str = str(environ.get("REDIS_CON"))
-    REDIS_NAME_SPACE: str = str(environ.get("REDIS_NAME_SPACE", "ta:"))
+    # SQLite page cache per connection in KiB
+    DB_CACHE_KB: int = int(environ.get("TA_DB_CACHE_KB") or 2048)
 
-    # ElasticSearch
-    ES_URL: str = str(environ.get("ES_URL"))
-    ES_PASS: str = get_password_from_file("ELASTIC_PASSWORD")
-    ES_USER: str = str(environ.get("ELASTIC_USER", "elastic"))
-    ES_SNAPSHOT_DIR: str = str(
-        environ.get(
-            "ES_SNAPSHOT_DIR", "/usr/share/elasticsearch/data/snapshot"
-        )
-    )
-    ES_DISABLE_VERIFY_SSL: bool = bool(environ.get("ES_DISABLE_VERIFY_SSL"))
+    # yt-dlp updates: release, nightly or off
+    YTDLP_UPDATE_CHANNEL: str = str(
+        environ.get("TA_AUTO_UPDATE_YTDLP") or "release"
+    ).lower()
+
+    # background tasks
+    TASK_CONCURRENCY: int = int(environ.get("TA_TASK_CONCURRENCY") or 2)
+    WEB_THREADS: int = int(environ.get("TA_WEB_THREADS") or 4)
 
     def get_cache_root(self):
         """get root for web server"""
@@ -110,24 +106,16 @@ class EnvironmentSettings:
             APP_DIR: {self.APP_DIR}
             CACHE_DIR: {self.CACHE_DIR}""")
 
-    def print_redis_conf(self):
-        """debug redis conf paths"""
+    def print_runtime(self):
+        """debug runtime settings"""
         print(f"""
-            REDIS_CON: {self.REDIS_CON}
-            REDIS_NAME_SPACE: {self.REDIS_NAME_SPACE}""")
-
-    def print_es_paths(self):
-        """debug es conf"""
-        print(f"""
-            ES_URL: {self.ES_URL}
-            ES_PASS: *****
-            ES_USER: {self.ES_USER}
-            ES_SNAPSHOT_DIR: {self.ES_SNAPSHOT_DIR}
-            ES_DISABLE_VERIFY_SSL: {self.ES_DISABLE_VERIFY_SSL}""")
+            TA_DB_CACHE_KB: {self.DB_CACHE_KB}
+            TA_TASK_CONCURRENCY: {self.TASK_CONCURRENCY}
+            TA_WEB_THREADS: {self.WEB_THREADS}
+            TA_AUTO_UPDATE_YTDLP: {self.YTDLP_UPDATE_CHANNEL}""")
 
     def print_all(self):
         """print all"""
         self.print_generic()
         self.print_paths()
-        self.print_redis_conf()
-        self.print_es_paths()
+        self.print_runtime()

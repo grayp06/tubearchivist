@@ -6,91 +6,22 @@ Functionality:
 - handle task locking
 """
 
-from appsettings.src.backup import ElasticBackup
+from appsettings.src.backup import IndexBackup
 from appsettings.src.config import ReleaseVersion
 from appsettings.src.filesystem import Scanner
-from appsettings.src.index_setup import ElasticIndexWrap
+from appsettings.src.index_setup import IndexSetup
 from appsettings.src.manual import ImportFolderScanner
 from appsettings.src.reindex import Reindex, ReindexManual, ReindexPopulate
-from celery import Task, shared_task
-from celery.exceptions import Retry
 from channel.src.index import YoutubeChannel
-from common.src.ta_redis import RedisArchivist
 from common.src.urlparser import ParsedURLType, Parser
 from download.src.queue import PendingList
 from download.src.subscriptions import SubscriptionHandler, SubscriptionScanner
 from download.src.thumbnails import ThumbValidator
 from download.src.yt_dlp_handler import VideoDownloader
-from task.src.notify import Notifications
-from task.src.task_config import TASK_CONFIG
+from download.src.ytdlp_update import YtDlpUpdate
+from task.src.runner import BaseTask, Retry, shared_task
 from task.src.task_manager import TaskManager
 from video.src.meta_embed import MetadataEmbed
-
-
-class BaseTask(Task):
-    """base class to inherit each class from"""
-
-    # pylint: disable=abstract-method
-
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
-        """callback for task failure"""
-        print(f"{task_id} Failed callback")
-        message, key = self._build_message(level="error")
-        message.update({"messages": [f"Task failed: {exc}"]})
-        RedisArchivist().set_message(key, message, expire=20)
-
-    def on_success(self, retval, task_id, args, kwargs):
-        """callback task completed"""
-        print(f"{task_id} success callback")
-        message, key = self._build_message()
-        message.update({"messages": ["Task completed"]})
-        RedisArchivist().set_message(key, message, expire=5)
-
-    def before_start(self, task_id, args, kwargs):
-        """callback before initiating task"""
-        print(f"{self.name} create callback")
-        message, key = self._build_message()
-        message.update({"messages": ["New task received."]})
-        RedisArchivist().set_message(key, message)
-
-    def after_return(self, status, retval, task_id, args, kwargs, einfo):
-        """callback after task returns"""
-        print(f"{task_id} return callback")
-        task_title = TASK_CONFIG.get(self.name).get("title")
-        Notifications(self.name).send(task_id, task_title)
-
-    def send_progress(
-        self, message_lines, progress=False, title=False, level="info"
-    ):
-        """send progress message"""
-        message, key = self._build_message(level=level)
-        message.update(
-            {
-                "messages": message_lines,
-                "progress": progress,
-            }
-        )
-        if title:
-            message["title"] = title
-
-        RedisArchivist().set_message(key, message)
-
-    def _build_message(self, level="info"):
-        """build message dict"""
-        task_id = self.request.id
-        message = TASK_CONFIG.get(self.name).copy()
-        message.update({"level": level, "id": task_id})
-        task_result = TaskManager().get_task(task_id)
-        if task_result:
-            command = task_result.get("command", None)
-            message.update({"command": command})
-
-        key = f"message:{message.get('group')}:{task_id.split('-')[0]}"
-        return message, key
-
-    def is_stopped(self):
-        """check if task is stopped"""
-        return TaskManager().is_stopped(self.request.id)
 
 
 @shared_task(name="update_subscribed", bind=True, base=BaseTask)
@@ -240,7 +171,7 @@ def run_backup(self, reason="auto"):
         return
 
     manager.init(self)
-    ElasticBackup(reason=reason, task=self).backup_all_indexes()
+    IndexBackup(reason=reason, task=self).backup_all_indexes()
 
 
 @shared_task(bind=True, name="restore_backup", base=BaseTask)
@@ -254,8 +185,8 @@ def run_restore_backup(self, filename):
 
     manager.init(self)
     self.send_progress(["Reset your Index"])
-    ElasticIndexWrap().reset()
-    ElasticBackup(task=self).restore(filename)
+    IndexSetup().reset()
+    IndexBackup(task=self).restore(filename)
     print("index restore finished")
 
     return f"backup restore completed: {filename}"
@@ -327,3 +258,17 @@ def index_channel_playlists(self, channel_id):
 def version_check():
     """check for new updates"""
     ReleaseVersion().check()
+
+
+@shared_task(bind=True, name="update_ytdlp", base=BaseTask)
+def update_ytdlp(self):
+    """look for a new yt-dlp version and install it"""
+    manager = TaskManager()
+    if manager.is_pending(self):
+        print(f"[task][{self.name}] yt-dlp update is already running")
+        self.send_progress(["yt-dlp update is already running."])
+        return None
+
+    manager.init(self)
+
+    return YtDlpUpdate(task=self).run()

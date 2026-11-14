@@ -1,20 +1,28 @@
 """
 Functionality:
-- check that all connections are working
+- check that the storage is usable
+- python management.py ta_connection
 """
 
+import os
 from time import sleep
 
-import requests
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap
-from common.src.ta_redis import RedisArchivist
+from common.src.index_store import IndexStore
+from common.src.sqlite_conn import (
+    INDEX_DB,
+    check_sqlite,
+    db_path,
+    filesystem_type,
+    is_network_fs,
+)
+from common.src.state_store import StateStore
 from django.core.management.base import BaseCommand, CommandError
 
 TOPIC = """
 
 #######################
-#  Connection check   #
+#    Storage check    #
 #######################
 
 """
@@ -23,155 +31,98 @@ TOPIC = """
 class Command(BaseCommand):
     """command framework"""
 
-    TIMEOUT = 120
-    MIN_MAJOR, MAX_MAJOR = 8, 9
-    MIN_MINOR = 0
-
     # pylint: disable=no-member
-    help = "Check connections"
+    help = "Check storage"
 
     def handle(self, *args, **options):
         """run all commands"""
         self.stdout.write(TOPIC)
-        self._redis_connection_check()
-        self._redis_config_set()
-        self._es_connection_check()
-        self._es_version_check()
-        self._es_path_check()
+        self._sqlite_version_check()
+        self._cache_dir_check()
+        self._filesystem_check()
+        self._state_store_check()
+        self._index_store_check()
 
-    def _redis_connection_check(self):
-        """check ir redis connection is established"""
-        self.stdout.write("[1] connect to Redis")
-        redis_conn = RedisArchivist().conn
-        for _ in range(5):
-            try:
-                pong = redis_conn.execute_command("PING")
-                if pong:
-                    self.stdout.write(
-                        self.style.SUCCESS("    ✓ Redis connection verified")
-                    )
-                    return
+    def _fail(self, message):
+        """stop startup with message"""
+        self.stdout.write(self.style.ERROR(message))
+        sleep(60)
+        raise CommandError(message)
 
-            except Exception:  # pylint: disable=broad-except
-                self.stdout.write("    ... retry Redis connection")
-                sleep(2)
+    def _sqlite_version_check(self):
+        """check sqlite library has all needed features"""
+        self.stdout.write("[1] SQLite version check")
+        is_ok, message = check_sqlite()
+        if not is_ok:
+            self._fail(f"    🗙 {message}")
 
-        message = "    🗙 Redis connection failed"
-        self.stdout.write(self.style.ERROR(f"{message}"))
+        self.stdout.write(self.style.SUCCESS(f"    ✓ SQLite {message}"))
+
+    def _cache_dir_check(self):
+        """check cache dir is writable"""
+        self.stdout.write("[2] check cache folder is writable")
+        cache_dir = EnvironmentSettings.CACHE_DIR
+        test_file = os.path.join(cache_dir, ".write_test")
         try:
-            redis_conn.execute_command("PING")
-        except Exception as err:  # pylint: disable=broad-except
-            message = f"    🗙 {type(err).__name__}: {err}"
-            self.stdout.write(self.style.ERROR(f"{message}"))
+            os.makedirs(cache_dir, exist_ok=True)
+            with open(test_file, "w", encoding="utf-8") as f:
+                f.write("test")
 
-        sleep(60)
-        raise CommandError(message)
+            os.remove(test_file)
+        except OSError as err:
+            self._fail(f"    🗙 can not write to {cache_dir}: {err}")
 
-    def _redis_config_set(self):
-        """set config for redis if not set already"""
-        self.stdout.write("[2] set Redis config")
-        redis_conn = RedisArchivist().conn
-        timeout_is = int(redis_conn.config_get("timeout").get("timeout"))
-        if not timeout_is:
-            redis_conn.config_set("timeout", 3600)
+        self.stdout.write(self.style.SUCCESS(f"    ✓ {cache_dir} is writable"))
 
-        self.stdout.write(self.style.SUCCESS("    ✓ Redis config set"))
-
-    def _es_connection_check(self):
-        """wait for elasticsearch connection"""
-        self.stdout.write("[3] connect to Elastic Search")
-        total = self.TIMEOUT // 5
-        for i in range(total):
-            self.stdout.write(f"    ... waiting for ES [{i}/{total}]")
-            try:
-                _, status_code = ElasticWrap("/").get(
-                    timeout=1, print_error=False
-                )
-            except (
-                requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-            ):
-                sleep(5)
-                continue
-
-            if status_code and status_code == 401:
-                sleep(5)
-                continue
-
-            if status_code and status_code == 200:
-                path = (
-                    "_cluster/health?"
-                    "wait_for_status=yellow&"
-                    "timeout=60s&"
-                    "wait_for_active_shards=1"
-                )
-                _, _ = ElasticWrap(path).get(timeout=60)
-                self.stdout.write(
-                    self.style.SUCCESS("    ✓ ES connection established")
-                )
-                return
-
-        response, status_code = ElasticWrap("/").get(
-            timeout=1, print_error=False
-        )
-
-        message = "    🗙 ES connection failed"
-        self.stdout.write(self.style.ERROR(f"{message}"))
-        self.stdout.write(f"    error message: {response}")
-        self.stdout.write(f"    status code: {status_code}")
-        sleep(60)
-        raise CommandError(message)
-
-    def _es_version_check(self):
-        """check for minimal elasticsearch version"""
-        self.stdout.write("[4] Elastic Search version check")
-        response, _ = ElasticWrap("/").get()
-        version = response["version"]["number"]
-        major = int(version.split(".")[0])
-
-        if self.MIN_MAJOR <= major <= self.MAX_MAJOR:
-            self.stdout.write(
-                self.style.SUCCESS("    ✓ ES version check passed")
-            )
+    def _filesystem_check(self):
+        """sqlite needs working file locks, refuse network filesystems"""
+        self.stdout.write("[3] check cache folder filesystem")
+        cache_dir = EnvironmentSettings.CACHE_DIR
+        fs_type = filesystem_type(cache_dir)
+        if not is_network_fs(fs_type):
+            message = f"    ✓ filesystem {fs_type or 'unknown'} is ok"
+            self.stdout.write(self.style.SUCCESS(message))
             return
 
         message = (
-            "    🗙 ES version check failed. "
-            + f"Expected {self.MIN_MAJOR}.{self.MIN_MINOR} but got {version}"
+            f"{cache_dir} is on a network filesystem ({fs_type}). "
+            + "File locking is not reliable there, "
+            + "that can corrupt the database."
         )
-        self.stdout.write(self.style.ERROR(f"{message}"))
-        sleep(60)
-        raise CommandError(message)
+        if os.environ.get("TA_ALLOW_NETWORK_FS", "").lower() == "true":
+            self.stdout.write(self.style.WARNING(f"    ! {message}"))
+            return
 
-    def _es_path_check(self):
-        """check that path.repo var is set"""
-        self.stdout.write("[5] check ES path.repo env var")
-        response, _ = ElasticWrap("_nodes/_all/settings").get()
-        snaphost_roles = [
-            "data",
-            "data_cold",
-            "data_content",
-            "data_frozen",
-            "data_hot",
-            "data_warm",
-            "master",
-        ]
-        for node in response["nodes"].values():
-            if not (set(node["roles"]) & set(snaphost_roles)):
-                continue
+        self._fail(
+            f"    🗙 {message} Move the cache folder to a local disk, "
+            + "the media folder can stay on the network. "
+            + "Set TA_ALLOW_NETWORK_FS=true to start anyway."
+        )
 
-            if node["settings"]["path"].get("repo"):
-                self.stdout.write(
-                    self.style.SUCCESS("    ✓ path.repo env var is set")
-                )
-                return
+    def _state_store_check(self):
+        """check state store"""
+        self.stdout.write("[4] check state store")
+        try:
+            handler = StateStore()
+            handler.set_message("startup_check", "ok", expire=10)
+            is_ok = handler.get_message_str("startup_check") == "ok"
+        except Exception as err:  # pylint: disable=broad-except
+            self._fail(f"    🗙 {type(err).__name__}: {err}")
 
-            message = (
-                "    🗙 path.repo env var not found. "
-                + "set the following env var to the ES container:\n"
-                + "    path.repo="
-                + EnvironmentSettings.ES_SNAPSHOT_DIR
-            )
-            self.stdout.write(self.style.ERROR(message))
-            sleep(60)
-            raise CommandError(message)
+        if not is_ok:
+            self._fail("    🗙 state store read failed")
+
+        self.stdout.write(self.style.SUCCESS("    ✓ state store verified"))
+
+    def _index_store_check(self):
+        """check index store"""
+        self.stdout.write("[5] check index store")
+        try:
+            row = IndexStore().conn.execute("PRAGMA quick_check").fetchone()
+        except Exception as err:  # pylint: disable=broad-except
+            self._fail(f"    🗙 {type(err).__name__}: {err}")
+
+        if row[0] != "ok":
+            self._fail(f"    🗙 {db_path(INDEX_DB)} is damaged: {row[0]}")
+
+        self.stdout.write(self.style.SUCCESS("    ✓ index store verified"))

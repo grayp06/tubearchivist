@@ -8,7 +8,7 @@ import urllib.parse
 
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import date_parser, get_duration_str
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from download.src.thumbnails import ThumbManager
 
 
@@ -41,7 +41,7 @@ class SearchProcess:
             return None
 
         query = f"{match_video_user_progress}:progress:*"
-        all_positions = RedisArchivist().list_items(query)
+        all_positions = StateStore().list_items(query)
         if not all_positions:
             return None
 

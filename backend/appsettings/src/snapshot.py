@@ -1,134 +1,59 @@
 """
 functionality:
-- handle snapshots in ES
+- handle snapshots of the index
+- a snapshot is a consistent copy of the index database file
 """
 
-from datetime import datetime
-from time import sleep
+import gzip
+import os
+import shutil
+import sqlite3
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap
-from common.src.helper import get_mapping
+from common.src.index_schema import FTS_FIELDS, all_indexes, fts_table
+from common.src.index_store import IndexStore
+from common.src.sqlite_conn import write_tx
 
 
-class ElasticSnapshot:
-    """interact with snapshots on ES"""
+class IndexSnapshot:
+    """interact with snapshots of the index"""
 
-    REPO = "ta_snapshot"
-    REPO_SETTINGS = {
-        "compress": "true",
-        "chunk_size": "1g",
-        "location": EnvironmentSettings.ES_SNAPSHOT_DIR,
-    }
     POLICY = "ta_daily"
+    SNAPSHOT_DIR = os.path.join(EnvironmentSettings.CACHE_DIR, "snapshot")
+    EXPIRE_DAYS = 14
+    MIN_COUNT = 3
+    MAX_COUNT = 30
+    EXTENSIONS = (".sqlite3.gz", ".sqlite3")
+    COPY_BUFFER = 1024 * 1024
+    DAILY_HOUR = 12
+    STAMP_FORMAT = "%Y%m%d-%H%M%S"
 
     def __init__(self):
-        self.all_indices = self._get_all_indices()
-
-    def _get_all_indices(self):
-        """return all indices names managed by TA"""
-        mapping = get_mapping()
-        all_indices = [f"ta_{i['index_name']}" for i in mapping]
-
-        return all_indices
+        self.all_indices = all_indexes()
+        self.zone = ZoneInfo(EnvironmentSettings.TZ)
 
     def setup(self):
-        """setup the snapshot in ES, create or update if needed"""
+        """setup snapshots, take one now if the last one is outdated"""
         print("snapshot: run setup")
-        repo_exists = self._check_repo_exists()
-        if not repo_exists:
-            self.create_repo()
-
-        policy_exists = self._check_policy_exists()
-        if not policy_exists:
-            self.create_policy()
-
-        is_outdated = self._needs_startup_snapshot()
-        if is_outdated:
+        os.makedirs(self.SNAPSHOT_DIR, exist_ok=True)
+        if self._needs_snapshot():
             _ = self.take_snapshot_now()
 
-    def _check_repo_exists(self):
-        """check if expected repo already exists"""
-        path = f"_snapshot/{self.REPO}"
-        response, statuscode = ElasticWrap(path).get()
-        if statuscode == 200:
-            print(f"snapshot: repo {self.REPO} already created")
-            matching = response[self.REPO]["settings"] == self.REPO_SETTINGS
-            if not matching:
-                print(f"snapshot: update repo settings {self.REPO_SETTINGS}")
-
-            return matching
-
-        print(f"snapshot: setup repo {self.REPO} config {self.REPO_SETTINGS}")
-        return False
-
-    def create_repo(self):
-        """create filesystem repo"""
-        path = f"_snapshot/{self.REPO}"
-        data = {
-            "type": "fs",
-            "settings": self.REPO_SETTINGS,
-        }
-        response, statuscode = ElasticWrap(path).post(data=data)
-        if statuscode == 200:
-            print(f"snapshot: repo setup correctly: {response}")
-
-    def _check_policy_exists(self):
-        """check if snapshot policy is set correctly"""
-        policy = self._get_policy()
-        expected_policy = self._build_policy_data()
-        if not policy:
-            print(f"snapshot: create policy {self.POLICY} {expected_policy}")
+    def run_daily(self) -> bool:
+        """called regularly, take daily snapshot and rotate if needed"""
+        os.makedirs(self.SNAPSHOT_DIR, exist_ok=True)
+        if not self._needs_snapshot():
             return False
 
-        if policy["policy"] != expected_policy:
-            print(f"snapshot: update policy settings {expected_policy}")
-            return False
+        self.take_snapshot_now()
+        self.rotate()
 
-        print("snapshot: policy is set.")
         return True
 
-    def _get_policy(self):
-        """get policy from es"""
-        path = f"_slm/policy/{self.POLICY}"
-        response, statuscode = ElasticWrap(path).get()
-        if statuscode != 200:
-            return False
-
-        return response[self.POLICY]
-
-    def create_policy(self):
-        """create snapshot lifetime policy"""
-        path = f"_slm/policy/{self.POLICY}"
-        data = self._build_policy_data()
-        response, statuscode = ElasticWrap(path).put(data)
-        if statuscode == 200:
-            print(f"snapshot: policy setup correctly: {response}")
-
-    def _build_policy_data(self):
-        """build policy dict from config"""
-        at_12 = datetime.now().replace(hour=12, minute=0, second=0)
-        hour = at_12.astimezone(ZoneInfo("UTC")).hour
-
-        return {
-            "schedule": f"0 0 {hour} * * ?",
-            "name": f"<{self.POLICY}_>",
-            "repository": self.REPO,
-            "config": {
-                "indices": self.all_indices,
-                "ignore_unavailable": True,
-                "include_global_state": True,
-            },
-            "retention": {
-                "expire_after": "30d",
-                "min_count": 5,
-                "max_count": 50,
-            },
-        }
-
-    def _needs_startup_snapshot(self):
-        """check if last snapshot is expired"""
+    def _needs_snapshot(self) -> bool:
+        """check if last snapshot is older than a day"""
         snap_dicts = self._get_all_snapshots()
         if not snap_dicts:
             print("snapshot: create initial snapshot")
@@ -140,151 +65,229 @@ class ElasticSnapshot:
         if outdated:
             print("snapshot: is outdated, create new now")
 
-        print("snapshot: last snapshot is up-to-date")
         return outdated
 
+    def _path(self, snapshot_id: str) -> str | None:
+        """get validated path of snapshot"""
+        if snapshot_id != os.path.basename(snapshot_id):
+            return None
+
+        if not snapshot_id.startswith(f"{self.POLICY}_"):
+            return None
+
+        for extension in self.EXTENSIONS:
+            file_path = os.path.join(
+                self.SNAPSHOT_DIR, f"{snapshot_id}{extension}"
+            )
+            if os.path.exists(file_path):
+                return file_path
+
+        return os.path.join(
+            self.SNAPSHOT_DIR, f"{snapshot_id}{self.EXTENSIONS[0]}"
+        )
+
     def take_snapshot_now(self, wait=False):
-        """execute daily snapshot now"""
-        path = f"_slm/policy/{self.POLICY}/_execute"
-        response, statuscode = ElasticWrap(path).post()
-        if statuscode == 200:
-            print(f"snapshot: executing now: {response}")
+        """create snapshot now"""
+        # pylint: disable=unused-argument
+        os.makedirs(self.SNAPSHOT_DIR, exist_ok=True)
+        started = datetime.now(tz=self.zone)
+        snapshot_name = f"{self.POLICY}_{started.strftime(self.STAMP_FORMAT)}"
+        file_path = self._path(snapshot_name)
+        if os.path.exists(file_path):
+            return {"snapshot_name": snapshot_name}
 
-        if wait and "snapshot_name" in response:
-            self._wait_for_snapshot(response["snapshot_name"])
+        raw_path = f"{file_path}.raw"
+        temp_path = f"{file_path}.partial"
+        for leftover in (raw_path, temp_path):
+            if os.path.exists(leftover):
+                os.remove(leftover)
 
-        return response
+        try:
+            IndexStore().snapshot_to(raw_path)
+            with open(raw_path, "rb") as source:
+                with gzip.open(temp_path, "wb", compresslevel=6) as target:
+                    shutil.copyfileobj(source, target, self.COPY_BUFFER)
+                    target.flush()
+                    os.fsync(target.fileno())
+        finally:
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
 
-    def _wait_for_snapshot(self, snapshot_name):
-        """return after snapshot_name completes"""
-        path = f"_snapshot/{self.REPO}/{snapshot_name}"
+        os.rename(temp_path, file_path)
+        print(f"snapshot: created {snapshot_name}")
 
-        while True:
-            # wait for task to be created
-            sleep(1)
-            _, statuscode = ElasticWrap(path).get()
-            if statuscode == 200:
-                break
+        return {"snapshot_name": snapshot_name}
 
-        while True:
-            # wait for snapshot success
-            response, statuscode = ElasticWrap(path).get()
-            snapshot_state = response["snapshots"][0]["state"]
-            if snapshot_state == "SUCCESS":
-                break
+    def rotate(self) -> None:
+        """delete expired snapshots"""
+        snap_dicts = self._get_all_snapshots() or []
+        expire = datetime.now().timestamp() - self.EXPIRE_DAYS * 24 * 60 * 60
+        for idx, snapshot in enumerate(snap_dicts):
+            if idx < self.MIN_COUNT:
+                continue
 
-            print(f"snapshot: {snapshot_name} in state {snapshot_state}")
-            print("snapshot: wait to complete")
-            sleep(5)
-
-        print(f"snapshot: completed - {response}")
+            if idx >= self.MAX_COUNT or snapshot["end_stamp"] < expire:
+                self.delete_single_snapshot(snapshot["id"])
 
     def get_snapshot_stats(self):
         """get snapshot info for frontend"""
         snapshot_info = self._build_policy_details()
-        if snapshot_info:
-            snapshot_info.update({"snapshots": self._get_all_snapshots()})
+        snapshot_info.update({"snapshots": self._get_all_snapshots() or []})
 
         return snapshot_info
 
     def get_single_snapshot(self, snapshot_id):
         """get single snapshot metadata"""
-        path = f"_snapshot/{self.REPO}/{snapshot_id}"
-        response, statuscode = ElasticWrap(path).get()
-        if statuscode == 404:
+        file_path = self._path(snapshot_id)
+        if not file_path or not os.path.exists(file_path):
             print(f"snapshots: not found: {snapshot_id}")
             return False
 
-        snapshot = response["snapshots"][0]
-        return self._parse_single_snapshot(snapshot)
+        return self._parse_single_snapshot(snapshot_id, file_path)
 
     def _get_all_snapshots(self):
-        """get a list of all registered snapshots"""
-        path = f"_snapshot/{self.REPO}/*?sort=start_time&order=desc"
-        response, statuscode = ElasticWrap(path).get()
-        if statuscode == 404:
-            print("snapshots: not configured")
-            return False
-
-        all_snapshots = response["snapshots"]
-        if not all_snapshots:
-            print("snapshots: no snapshots found")
+        """get a list of all snapshots, newest first"""
+        if not os.path.exists(self.SNAPSHOT_DIR):
             return False
 
         snap_dicts = []
-        for snapshot in all_snapshots:
-            snap_dict = self._parse_single_snapshot(snapshot)
-            snap_dicts.append(snap_dict)
+        for file_name in os.listdir(self.SNAPSHOT_DIR):
+            snapshot_id = self._snapshot_id(file_name)
+            if not snapshot_id or not self._path(snapshot_id):
+                continue
+
+            file_path = os.path.join(self.SNAPSHOT_DIR, file_name)
+            try:
+                snap_dicts.append(
+                    self._parse_single_snapshot(snapshot_id, file_path)
+                )
+            except ValueError:
+                continue
+
+        if not snap_dicts:
+            return False
+
+        snap_dicts.sort(key=lambda i: i["id"], reverse=True)
 
         return snap_dicts
 
-    def _parse_single_snapshot(self, snapshot):
-        """extract relevant metadata from single snapshot"""
-        snap_dict = {
-            "id": snapshot["snapshot"],
-            "state": snapshot["state"],
-            "es_version": snapshot["version"],
-            "start_date": self._date_converter(snapshot["start_time"]),
-            "end_date": self._date_converter(snapshot["end_time"]),
-            "end_stamp": snapshot["end_time_in_millis"] // 1000,
-            "duration_s": snapshot["duration_in_millis"] // 1000,
+    def _snapshot_id(self, file_name: str) -> str | None:
+        """extract snapshot id from file name"""
+        for extension in self.EXTENSIONS:
+            if file_name.endswith(extension):
+                return file_name[: -len(extension)]
+
+        return None
+
+    def _parse_single_snapshot(self, snapshot_id, file_path):
+        """build metadata of single snapshot"""
+        prefix_len = len(self.POLICY) + 1
+        stamp = snapshot_id[prefix_len:]
+        started = datetime.strptime(stamp, self.STAMP_FORMAT)
+        started = started.replace(tzinfo=self.zone)
+        end_stamp = int(os.path.getmtime(file_path))
+        ended = datetime.fromtimestamp(end_stamp, tz=self.zone)
+
+        return {
+            "id": snapshot_id,
+            "state": "SUCCESS",
+            "es_version": f"sqlite {sqlite3.sqlite_version}",
+            "start_date": started.strftime("%Y-%m-%d %H:%M"),
+            "end_date": ended.strftime("%Y-%m-%d %H:%M"),
+            "end_stamp": end_stamp,
+            "duration_s": max(end_stamp - int(started.timestamp()), 0),
+            "size": os.path.getsize(file_path),
         }
-        return snap_dict
 
     def _build_policy_details(self):
         """get additional policy details"""
-        policy = self._get_policy()
-        if not policy:
-            return False
+        now = datetime.now(tz=self.zone)
+        snap_dicts = self._get_all_snapshots()
+        if snap_dicts:
+            last = datetime.fromtimestamp(
+                snap_dicts[0]["end_stamp"], self.zone
+            )
+            next_exec_date = max(last + timedelta(days=1), now)
+        else:
+            next_exec_date = now
 
-        next_exec = policy["next_execution_millis"] // 1000
-        next_exec_date = datetime.fromtimestamp(next_exec)
-        next_exec_str = next_exec_date.strftime("%Y-%m-%d %H:%M")
-        expire_after = policy["policy"]["retention"]["expire_after"]
-        policy_metadata = {
-            "next_exec": next_exec,
-            "next_exec_str": next_exec_str,
-            "expire_after": expire_after,
+        return {
+            "next_exec": int(next_exec_date.timestamp()),
+            "next_exec_str": next_exec_date.strftime("%Y-%m-%d %H:%M"),
+            "expire_after": f"{self.EXPIRE_DAYS}d",
         }
-        return policy_metadata
-
-    @staticmethod
-    def _date_converter(date_utc):
-        """convert datetime string"""
-        date = datetime.strptime(date_utc, "%Y-%m-%dT%H:%M:%S.%fZ")
-        utc_date = date.replace(tzinfo=ZoneInfo("UTC"))
-        converted = utc_date.astimezone(ZoneInfo(EnvironmentSettings.TZ))
-        converted_str = converted.strftime("%Y-%m-%d %H:%M")
-
-        return converted_str
 
     def restore_all(self, snapshot_name):
-        """restore snapshot by name"""
-        for index in self.all_indices:
-            response, status_code = ElasticWrap(index).get()
-            if status_code == 404:
-                continue
+        """replace all documents of the index with the snapshot"""
+        file_path = self._path(snapshot_name)
+        if not file_path or not os.path.exists(file_path):
+            print(f"snapshot: failed to restore, not found {snapshot_name}")
+            return False
 
-            index_alias = list(response.keys())[0]
-            _, _ = ElasticWrap(index_alias).delete()
+        restore_path = file_path
+        is_compressed = file_path.endswith(".gz")
+        if is_compressed:
+            restore_path = os.path.join(self.SNAPSHOT_DIR, "restore.tmp")
+            with gzip.open(file_path, "rb") as source:
+                with open(restore_path, "wb") as target:
+                    shutil.copyfileobj(source, target, self.COPY_BUFFER)
 
-        path = f"_snapshot/{self.REPO}/{snapshot_name}/_restore"
-        data = {"indices": "*,-.*"}
-        response, statuscode = ElasticWrap(path).post(data=data)
-        if statuscode == 200:
-            print(f"snapshot: executing now: {response}")
-            return response
+        store = IndexStore()
+        conn = store.conn
+        try:
+            conn.execute("ATTACH DATABASE ? AS snapshot", (restore_path,))
+            try:
+                with write_tx(conn):
+                    for index in self.all_indices:
+                        self._restore_index(store, index)
+            finally:
+                conn.execute("DETACH DATABASE snapshot")
+        finally:
+            if is_compressed and os.path.exists(restore_path):
+                os.remove(restore_path)
 
-        print(f"snapshot: failed to restore, {statuscode} {response}")
-        return False
+        store.optimize()
+        print(f"snapshot: restored {snapshot_name}")
+
+        return {"accepted": True}
+
+    @staticmethod
+    def _restore_index(store: IndexStore, index: str) -> None:
+        """restore single index from attached snapshot"""
+        conn = store.conn
+        store.delete_index(index)
+        store.create_index(index)
+        in_snapshot = conn.execute(
+            "SELECT 1 FROM snapshot.sqlite_master "
+            + "WHERE type = 'table' AND name = ?",
+            (index,),
+        ).fetchone()
+        if not in_snapshot:
+            return
+
+        # copy without triggers, then build the full text index in one go
+        has_fts = index in FTS_FIELDS
+        if has_fts:
+            for suffix in ("ai", "ad", "au"):
+                conn.execute(f"DROP TRIGGER IF EXISTS {index}_{suffix}")
+
+        conn.execute(
+            f"INSERT INTO main.{index} (rowid, _id, source) "
+            + f"SELECT rowid, _id, source FROM snapshot.{index}"
+        )
+        if has_fts:
+            fts = fts_table(index)
+            conn.execute(f"INSERT INTO {fts} ({fts}) VALUES ('rebuild')")
+            store.create_index(index)
 
     def delete_single_snapshot(self, snapshot_id):
-        """delete single snapshot from index"""
-        path = f"_snapshot/{self.REPO}/{snapshot_id}"
-        response, statuscode = ElasticWrap(path).delete()
-        if statuscode == 200:
-            print(f"snapshot: deleting {snapshot_id} {response}")
-            return response
+        """delete single snapshot"""
+        file_path = self._path(snapshot_id)
+        if not file_path or not os.path.exists(file_path):
+            print(f"snapshot: failed to delete, not found {snapshot_id}")
+            return False
 
-        print(f"snapshot: failed to delete, {statuscode} {response}")
-        return False
+        os.remove(file_path)
+        print(f"snapshot: deleting {snapshot_id}")
+
+        return {"acknowledged": True}

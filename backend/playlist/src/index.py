@@ -4,11 +4,10 @@ functionality:
 - index and update in es
 """
 
-import json
 from datetime import datetime
 
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.index_generic import YouTubeItem
 from download.src.thumbnails import ThumbManager
 from video.src import index as ta_video
@@ -148,35 +147,37 @@ class YoutubePlaylist(YouTubeItem):
         self.upload_to_es()
         return self.json_data
 
+    def _add_playlist_id(self, source: dict) -> bool:
+        """update script to add this playlist to a video"""
+        playlists = source.setdefault("playlist", [])
+        if self.youtube_id in playlists:
+            return False
+
+        playlists.append(self.youtube_id)
+        return True
+
+    def _remove_playlist_id(self, source: dict) -> bool:
+        """update script to remove this playlist from a video"""
+        playlists = source.get("playlist") or []
+        if self.youtube_id not in playlists:
+            return False
+
+        source["playlist"] = [i for i in playlists if i != self.youtube_id]
+        return True
+
     def add_vids_to_playlist(self):
         """sync the playlist id to videos"""
-        script = (
-            'if (!ctx._source.containsKey("playlist")) '
-            + "{ctx._source.playlist = [params.playlist]} "
-            + "else if (!ctx._source.playlist.contains(params.playlist)) "
-            + "{ctx._source.playlist.add(params.playlist)} "
-            + "else {ctx.op = 'none'}"
-        )
+        video_ids = [
+            i["youtube_id"] for i in self.json_data["playlist_entries"]
+        ]
+        if not video_ids:
+            return
 
-        bulk_list = []
-        for entry in self.json_data["playlist_entries"]:
-            video_id = entry["youtube_id"]
-            action = {"update": {"_id": video_id, "_index": "ta_video"}}
-            source = {
-                "script": {
-                    "source": script,
-                    "lang": "painless",
-                    "params": {"playlist": self.youtube_id},
-                }
-            }
-            bulk_list.append(json.dumps(action))
-            bulk_list.append(json.dumps(source))
-
-        # add last newline
-        bulk_list.append("\n")
-        query_str = "\n".join(bulk_list)
-
-        ElasticWrap("_bulk").post(query_str, ndjson=True)
+        data = {
+            "query": {"terms": {"youtube_id": video_ids}},
+            "script": self._add_playlist_id,
+        }
+        IndexClient("ta_video/_update_by_query").post(data)
 
     def remove_vids_from_playlist(self):
         """remove playlist ids from videos if needed"""
@@ -185,20 +186,16 @@ class YoutubePlaylist(YouTubeItem):
         to_remove = [
             i["youtube_id"] for i in result if i["youtube_id"] not in needed
         ]
-        s = "ctx._source.playlist.removeAll(Collections.singleton(params.rm))"
-        for video_id in to_remove:
-            query = {
-                "script": {
-                    "source": s,
-                    "lang": "painless",
-                    "params": {"rm": self.youtube_id},
-                },
-                "query": {"match": {"youtube_id": video_id}},
-            }
-            path = "ta_video/_update_by_query"
-            _, status_code = ElasticWrap(path).post(query)
-            if status_code == 200:
-                print(f"{self.youtube_id}: removed {video_id} from playlist")
+        if not to_remove:
+            return
+
+        data = {
+            "query": {"terms": {"youtube_id": to_remove}},
+            "script": self._remove_playlist_id,
+        }
+        response, _ = IndexClient("ta_video/_update_by_query").post(data)
+        removed = response.get("updated")
+        print(f"{self.youtube_id}: removed {removed} videos from playlist")
 
     def match_local(self):
         """match local videos as indexed"""
@@ -296,21 +293,13 @@ class YoutubePlaylist(YouTubeItem):
     def delete_metadata(self):
         """delete metadata for playlist"""
         self.delete_videos_metadata()
-        script = (
-            "ctx._source.playlist.removeAll("
-            + "Collections.singleton(params.playlist)) "
-        )
         data = {
             "query": {
                 "term": {"playlist.keyword": {"value": self.youtube_id}}
             },
-            "script": {
-                "source": script,
-                "lang": "painless",
-                "params": {"playlist": self.youtube_id},
-            },
+            "script": self._remove_playlist_id,
         }
-        _, _ = ElasticWrap("ta_video/_update_by_query").post(data)
+        _, _ = IndexClient("ta_video/_update_by_query").post(data)
         self.del_in_es()
 
     def is_custom_playlist(self):

@@ -14,10 +14,9 @@ from typing import TypedDict
 
 import requests
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import rand_sleep, requests_headers
+from common.src.index_client import IndexClient, IndexPaginate
 from download.src.yt_dlp_base import CookieHandler
-from yt_dlp.utils import orderedSet_from_options
 
 
 class SubtitleCue(TypedDict):
@@ -57,6 +56,9 @@ class YoutubeSubtitle:
 
         all_sub_langs = tuple(available_subtitles.keys())
         relevant_subtitles = False
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import orderedSet_from_options
+
         try:
             relevant_subtitles = [
                 available_subtitles[lang]
@@ -214,7 +216,7 @@ class YoutubeSubtitle:
     @staticmethod
     def index_subtitle(query_str):
         """send subtitle to es for indexing"""
-        _, _ = ElasticWrap("_bulk").post(data=query_str, ndjson=True)
+        _, _ = IndexClient("_bulk").post(data=query_str, ndjson=True)
 
     def delete(self, subtitles=False):
         """delete subtitles from index and filesystem"""
@@ -238,7 +240,7 @@ class YoutubeSubtitle:
         # delete from index
         path = "ta_subtitle/_delete_by_query?refresh=true"
         data = {"query": {"term": {"youtube_id": {"value": youtube_id}}}}
-        _, _ = ElasticWrap(path).post(data=data)
+        _, _ = IndexClient(path).post(data=data)
 
 
 class SubtitleParser:

@@ -3,20 +3,8 @@
 
 set -e
 
-if [[ -n "$DJANGO_DEBUG" ]]; then
-  LOGLEVEL="DEBUG"
-else
-  LOGLEVEL="INFO"
-fi
-
-# update yt-dlp if needed
-if [[ "${TA_AUTO_UPDATE_YTDLP,,}" =~ ^(release|nightly)$ ]]; then
-    echo "Updating yt-dlp..."
-    preflag=$([[ "${TA_AUTO_UPDATE_YTDLP,,}" == "nightly" ]] && echo "--pre" || echo "")
-    python -m pip install --target=/root/.local/bin --upgrade $preflag "yt-dlp[default]" || {
-        echo "yt-dlp update failed"
-    }
-fi
+# keep memory fragmentation of the threaded web process low
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
 # stop on pending manual migration
 python manage.py ta_stop_on_error
@@ -30,14 +18,8 @@ python manage.py ta_envcheck
 python manage.py ta_connection
 python manage.py ta_startup
 
-# start all tasks
+# start web server, the application runs as a single process:
+# web threads plus the task dispatcher, tasks run as short lived processes
 nginx &
-celery -A task.celery worker \
-    --loglevel=$LOGLEVEL \
-    --concurrency 4 \
-    --max-tasks-per-child 5 \
-    --max-memory-per-child 150000 &
 
-./beat_auto_spawn.sh &
-
-python backend_start.py
+exec python backend_start.py

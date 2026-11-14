@@ -6,7 +6,7 @@ from appsettings.serializers import TokenResponseSerializer
 from appsettings.serializers_mb import MembershipProfileSerializer
 from appsettings.src.membership import Membership
 from common.serializers import ErrorResponseSerializer
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.views_base import AdminOnly, ApiBaseView
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework.response import Response
@@ -94,7 +94,7 @@ class MembershipToken(ApiBaseView):
 
     def get(self, request):
         """get token"""
-        token = RedisArchivist().get_message_dict(self.REDIS_KEY)
+        token = StateStore().get_message_dict(self.REDIS_KEY)
         if token:
             serializer = TokenResponseSerializer(data=token)
             serializer.is_valid(raise_exception=True)
@@ -109,7 +109,7 @@ class MembershipToken(ApiBaseView):
         serializer = TokenResponseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        RedisArchivist().set_message(
+        StateStore().set_message(
             self.REDIS_KEY, message=serializer.data, save=True
         )
 
@@ -117,6 +117,6 @@ class MembershipToken(ApiBaseView):
 
     def delete(self, request):
         """delete token"""
-        RedisArchivist().del_message(self.REDIS_KEY)
+        StateStore().del_message(self.REDIS_KEY)
 
         return Response(status=204)

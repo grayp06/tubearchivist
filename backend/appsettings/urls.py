@@ -30,6 +30,11 @@ urlpatterns = [
         name="api-backup",
     ),
     path(
+        "ytdlp/",
+        views.YtDlpStatusView.as_view(),
+        name="api-ytdlp",
+    ),
+    path(
         "cookie/",
         views.CookieView.as_view(),
         name="api-cookie",

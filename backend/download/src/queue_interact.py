@@ -1,6 +1,6 @@
 """interact with queue items"""
 
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 
 
 class PendingInteract:
@@ -13,7 +13,7 @@ class PendingInteract:
     def delete_item(self):
         """delete single item from pending"""
         path = f"ta_download/_doc/{self.youtube_id}"
-        _, _ = ElasticWrap(path).delete(refresh=True)
+        _, _ = IndexClient(path).delete(refresh=True)
 
     def delete_bulk(self, channel_id: str | None, vid_type: str | None):
         """delete all matching item by status"""
@@ -27,7 +27,7 @@ class PendingInteract:
         data = {"query": {"bool": {"must": must_list}}}
 
         path = "ta_download/_delete_by_query?refresh=true"
-        _, _ = ElasticWrap(path).post(data=data)
+        _, _ = IndexClient(path).post(data=data)
 
     def update_bulk(
         self,
@@ -53,24 +53,23 @@ class PendingInteract:
             else:
                 must_not_list.append(exists)
 
-        if new_status == "priority":
-            source = """
-            ctx._source.status = 'pending';
-            ctx._source.auto_start = true;
-            ctx._source.message = null;
-            """
-        elif new_status == "clear_error":
-            source = "ctx._source.message = null"
-        else:
-            source = f"ctx._source.status = '{new_status}'"
+        def script(source: dict) -> None:
+            if new_status == "priority":
+                source.update(
+                    {"status": "pending", "auto_start": True, "message": None}
+                )
+            elif new_status == "clear_error":
+                source["message"] = None
+            else:
+                source["status"] = new_status
 
         data = {
             "query": {"bool": {"must": must_list, "must_not": must_not_list}},
-            "script": {"source": source, "lang": "painless"},
+            "script": script,
         }
 
         path = "ta_download/_update_by_query?refresh=true"
-        _, _ = ElasticWrap(path).post(data)
+        _, _ = IndexClient(path).post(data)
 
     def update_status(self):
         """update status of pending item"""
@@ -86,12 +85,12 @@ class PendingInteract:
             data = {"doc": {"status": self.status}}
 
         path = f"ta_download/_update/{self.youtube_id}/?refresh=true"
-        _, _ = ElasticWrap(path).post(data=data)
+        _, _ = IndexClient(path).post(data=data)
 
     def get_item(self):
         """return pending item dict"""
         path = f"ta_download/_doc/{self.youtube_id}"
-        response, status_code = ElasticWrap(path).get()
+        response, status_code = IndexClient(path).get()
         return response["_source"], status_code
 
     def get_channel(self):
@@ -102,7 +101,7 @@ class PendingInteract:
             "size": 1,
             "query": {"term": {"channel_id": {"value": self.youtube_id}}},
         }
-        response, _ = ElasticWrap("ta_download/_search").get(data=data)
+        response, _ = IndexClient("ta_download/_search").get(data=data)
         hits = response["hits"]["hits"]
         if not hits:
             channel_name = "NA"

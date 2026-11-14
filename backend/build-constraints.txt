@@ -1,0 +1,4 @@
+# constraints for the build environment of packages installed from source
+# newer hatchling refuses to build bgutil-ytdlp-pot-provider from its
+# plugin subdirectory: "Readme path must be within the project directory"
+hatchling<=1.29.0

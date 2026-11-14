@@ -11,12 +11,14 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
 import hashlib
+import sqlite3
 from os import environ, path
 from pathlib import Path
 
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import ta_host_parser
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
+from common.src.ytdlp_path import activate_update
 from corsheaders.defaults import default_headers
 
 try:
@@ -26,6 +28,9 @@ try:
 except ModuleNotFoundError:
     pass
 
+
+# use the yt-dlp version installed by the scheduled update, if any
+activate_update()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -48,7 +53,6 @@ CORS_ALLOWED_ORIGINS = CSRF_TRUSTED_ORIGINS
 # Application definition
 
 INSTALLED_APPS = [
-    "django_celery_beat",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -113,6 +117,15 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": DB_PATH,
+        "OPTIONS": {
+            "timeout": 60,
+            "transaction_mode": "IMMEDIATE",
+            "init_command": (
+                "PRAGMA journal_mode=WAL;"
+                "PRAGMA synchronous=NORMAL;"
+                f"PRAGMA cache_size=-{EnvironmentSettings.DB_CACHE_KB};"
+            ),
+        },
     }
 }
 
@@ -223,10 +236,10 @@ CORS_EXPOSE_HEADERS = ["X-Start-Timestamp"]
 TA_UPSTREAM = "https://github.com/tubearchivist/tubearchivist"
 TA_VERSION = "v0.5.10"
 try:
-    TA_START = RedisArchivist().get_message_str("STARTTIMESTAMP")
-except ValueError:
+    TA_START = StateStore().get_message_str("STARTTIMESTAMP")
+except (ValueError, OSError, sqlite3.Error):
     # fails in unittests bootstrap
-    pass
+    TA_START = None
 
 # API
 REST_FRAMEWORK = {

@@ -43,43 +43,49 @@ Once your YouTube video collection grows, it becomes hard to search and find a s
 
 ## Installing
 
-For minimal system requirements, the Tube Archivist stack needs around 2GB of available memory for a small testing setup and around 4GB of available memory for a mid to large sized installation. Minimal with dual core with 4 threads, better quad core plus.
+This is the single container, low memory variant of Tube Archivist. There is no Elasticsearch, no Redis and no worker pool to run: everything is stored in SQLite database files in the cache volume and the application runs as one process.
+
+| | Original stack | This variant |
+| --- | --- | --- |
+| Containers | 3: application, Elasticsearch, Redis | 1 |
+| Index and search | Elasticsearch | SQLite with FTS5 full text search |
+| State and queues | Redis | SQLite |
+| Background tasks | Celery worker pool and beat scheduler | Dispatcher thread, each task is a short lived process |
+| Web server | 4 worker processes | 1 process with threads |
+| Recommended memory | 2GB to 4GB | Around 256MB |
+
+As a reference, measured outside of Docker with an archive of 50000 videos and 430000 subtitle lines: The application process idles at around 55MB to 70MB and stays below 100MB while browsing and searching. A running task like a download or a backup temporarily adds a process of around 100MB to 150MB, that memory is returned as soon as the task completes.
+
 This project requires docker. Ensure it is installed and running on your system.
 
-The documentation has additional user provided instructions for [Unraid](https://docs.tubearchivist.com/installation/unraid/), [Synology](https://docs.tubearchivist.com/installation/synology/) and [Podman](https://docs.tubearchivist.com/installation/podman/).
+Take a look at the example [docker-compose.yml](docker-compose.yml) and configure the required environment variables.
 
-The instructions here should get you up and running quickly, for Docker beginners and full explanation about each environment variable, see the [docs](https://docs.tubearchivist.com/installation/docker-compose/).
+You don't need to build the image yourself: the [docker_image](.github/workflows/docker_image.yml) workflow builds it for `amd64` and `arm64`, runs the tests and publishes it to `ghcr.io/grayp06/tubearchivist`. The tag `latest` follows the default branch, every other branch is published under its branch name. Pull the new image with `docker compose pull && docker compose up -d`.
 
-Take a look at the example [docker-compose.yml](https://github.com/tubearchivist/tubearchivist/blob/master/docker-compose.yml) and configure the required environment variables.
+`TA_PASSWORD` can be suffixed with `_FILE` to allow passing in the password as a secret.
 
-All environment variables are explained in detail in the docs [here](https://docs.tubearchivist.com/installation/env-vars/).
-
-Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow passing in passwords as secrets. `_FILE` is a convention used by some images including [ElasticSearch](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/install-elasticsearch-docker-configure)
-
-### TubeArchivist
+### Environment variables
 
 | Environment Var               | Value | Required |
 | ----------------------------- | ----- | -------- |
 | TA_HOST                       | Server IP or hostname `http://tubearchivist.local:8000` | Required |
 | TA_USERNAME                   | Initial username when logging into TA | Required |
 | TA_PASSWORD                   | Initial password when logging into TA | Required |
-| ELASTIC_PASSWORD              | Password for ElasticSearch | Required |
-| REDIS_CON                     | Connection string to Redis | Required |
 | TZ                            | Set your timezone for the scheduler | Required |
 | TA_PORT                       | Overwrite Nginx port | Optional |
 | TA_BACKEND_PORT               | Overwrite container internal backend server port | Optional |
 | TA_ENABLE_AUTH_PROXY          | Enables support for forwarding auth in reverse proxies | [Read more](https://docs.tubearchivist.com/configuration/forward-auth/) |
 | TA_AUTH_PROXY_USERNAME_HEADER | Header containing username to log in | Optional |
 | TA_AUTH_PROXY_LOGOUT_URL      | Logout URL for forwarded auth | Optional |
-| ES_URL                        | URL That ElasticSearch runs on | Optional |
-| ES_DISABLE_VERIFY_SSL         | Disable ElasticSearch SSL certificate verification | Optional |
-| ES_SNAPSHOT_DIR               | Custom path where elastic search stores snapshots for master/data nodes | Optional |
 | HOST_GID                      | Allow TA to own the video files instead of container user | Optional |
 | HOST_UID                      | Allow TA to own the video files instead of container user | Optional |
-| ELASTIC_USER                  | Change the default ElasticSearch user | Optional |
 | TA_LDAP                       | Configure TA to use LDAP Authentication | [Read more](https://docs.tubearchivist.com/configuration/ldap/) |
 | DISABLE_STATIC_AUTH           | Remove authentication from media files, (Google Cast...) | [Read more](https://docs.tubearchivist.com/installation/env-vars/#disable_static_auth) |
-| TA_AUTO_UPDATE_YTDLP          | Configure TA to automatically install the latest yt-dlp on container start | Optional |
+| TA_AUTO_UPDATE_YTDLP          | Channel for automatic yt-dlp updates: `release` (default), `nightly` or `off` | Optional |
+| TA_ALLOW_NETWORK_FS           | Set to `true` to start with the cache volume on a network file system, not recommended | Optional |
+| TA_TASK_CONCURRENCY           | How many background tasks can run at the same time (Default: 2) | Optional |
+| TA_WEB_THREADS                | Threads of the web server (Default: 4) | Optional |
+| TA_DB_CACHE_KB                | SQLite page cache per connection in KiB (Default: 2048) | Optional |
 | DJANGO_DEBUG                  | Return additional error messages, for debug only | Optional |
 | TA_LOGIN_AUTH_MODE            | Configure the order of login authentication backends (Default: single) | Optional |
 
@@ -91,22 +97,72 @@ Both `TA_PASSWORD` and `ELASTIC_PASSWORD` can be suffixed with `_FILE` to allow 
 | forwardauth              | Use reverse proxy headers only |
 | ldap_local               | Use LDAP backend in addition to the local password database |
 
-### ElasticSearch
+The variables of the original stack `ES_URL`, `ELASTIC_PASSWORD`, `ELASTIC_USER`, `ES_SNAPSHOT_DIR`, `ES_DISABLE_VERIFY_SSL`, `REDIS_CON` and `REDIS_NAME_SPACE` are not used anymore. They get ignored with a note in the startup log, you can remove them.
 
-| Environment Var  | Value | Required |
-| ---------------- | ----- | -------- |
-| ELASTIC_PASSWORD | Matching password `ELASTIC_PASSWORD` from TubeArchivist | Required |
-| http.port        | Change the port ElasticSearch runs on | Optional |
+### Where your data lives
+
+Everything except your media files is stored in the cache volume:
+
+| File | Content |
+| ---- | ------- |
+| `index.sqlite3` | All metadata: videos, channels, playlists, download queue, subtitles, comments and settings |
+| `db.sqlite3` | User accounts, sessions and schedules |
+| `state.sqlite3` | Task queue, task results, notifications and other temporary state |
+| `snapshot/` | Daily compressed snapshots of the index, kept for 14 days |
+| `backup/` | Zip file backups |
+| `ytdlp/` | yt-dlp version installed by the automatic update and the one before it |
+
+Keep the cache volume on local storage, SQLite does not work reliably on network file systems like NFS or SMB. The container refuses to start if it detects one for the cache volume, the media volume can be on the network.
+
+All database files are checked for damage once a week. If a problem is found, you will see a notification on the settings pages and a message in the log: restore a snapshot or a backup and check your storage.
+
+### Automatic yt-dlp updates
+
+YouTube changes frequently and **yt-dlp** needs to keep up. Tube Archivist looks for a new yt-dlp version once a day and installs it, no action is needed from your side:
+
+* The schedule gets created on first start and a first check runs right away. If the container was off at the scheduled time, the check runs after the next start.
+* New versions are installed to the cache volume, so they survive container updates. Once the image ships the same or a newer version, the downloaded copy is removed.
+* Tasks are started as new processes, the next download or rescan uses the new version without a restart.
+* Only yt-dlp and its JavaScript challenge solver are replaced, the other Python packages of the image are not touched.
+* Before a new version is used, it has to load and pass a test extraction. If it does not while the current version does, the update is discarded. The previous version is kept on disk as fallback.
+* The *Scheduling* settings page shows the version in use, the last check and its result, the *Check now* button starts a check right away. The same information is available from `GET /api/appsettings/ytdlp/`.
+* Change the time or remove the schedule on the *Scheduling* settings page under *yt-dlp Update*. To trigger a check through the API, send a `POST` request to `/api/task/by-name/update_ytdlp/`.
+* Set `TA_AUTO_UPDATE_YTDLP` to `nightly` to follow the yt-dlp nightly builds or to `off` to stay on the version of the image.
+
+### Migrating from the original stack
+
+1. In your existing installation, create a zip file backup on the *Actions* settings page. The file is stored in the `backup` folder of your cache volume.
+2. Stop the stack and replace your compose file with the single container version. Keep your media and cache volumes. The Elasticsearch and Redis containers and their volumes are not needed anymore.
+3. Start the container. Your user accounts and schedules are converted on first start.
+4. On the *Actions* settings page, restore the zip file backup.
+
+Elasticsearch snapshots can not be restored, use the zip file backup.
+
+As alternative to the backup file, you can copy all documents directly from Elasticsearch. Keep the Elasticsearch container running and reachable from the new container, start the new container and run:
+
+```bash
+docker exec -it tubearchivist python manage.py ta_import_elasticsearch \
+    --url http://archivist-es:9200 --password your-elastic-password --replace
+```
+
+Restart the container once the import is done, you can remove Elasticsearch after that.
+
+### Differences to the original stack
+
+The interface and the API are the same. Things to be aware of:
+
+* Search uses SQLite FTS5 instead of Elasticsearch. Stemming, prefix search while typing, fuzzy matching and highlighting work, the ranking and the fuzzy matches can differ from what Elasticsearch returns.
+* Snapshots are complete, compressed copies of the index database instead of incremental snapshots. To limit disk usage, they are kept for 14 days.
+* Result lists are not limited to 10000 items.
 
 ## Update
 
-Always use the *latest* (the default) or a named semantic version tag for the docker images. The *unstable* tags see [CONTRIBUTING.md#beta-testing](https://github.com/tubearchivist/tubearchivist/blob/master/CONTRIBUTING.md#beta-testing).
+Always use the *latest* (the default) or a named semantic version tag for the docker images.
 
 You will see the current version number of **Tube Archivist** in the footer of the interface. There is a daily version check task querying tubearchivist.com, notifying you of any new releases in the footer. After updating, check the footer to verify you are running the expected version.
 
 * This project is tested for updates between one or two releases maximum. Further updates back may or may not be supported. Ideally apply new updates at least once per month.
 * There can be breaking changes between updates, particularly as the application grows, new environment variables or settings might be required for you to set in the your docker-compose file. *Always* check the **release notes**: Any breaking changes will be marked there.
-* All testing and development is done with the Elasticsearch version number as mentioned in the provided *docker-compose.yml* file. This will be updated from time to time. Running an older version of Elasticsearch is most likely not going to result in any issues, but it's still recommended to run the same version as mentioned. Use `bbilly1/tubearchivist-es` to automatically get the recommended version.
 
 ## Getting Started
 
@@ -131,44 +187,21 @@ For more information on port collisions, check the docs.
 
 Here is a list of common errors and their solutions.
 
-### `vm.max_map_count`
+### Storage check fails at startup
 
-**Elastic Search** in Docker requires the kernel setting of the host machine `vm.max_map_count` to be set to at least 262144.
+The container stops at startup if it can not write to the cache volume. Make sure the user of the container is allowed to write to the folder mounted to `/cache`.
 
-To temporary set the value run:
+### `database is locked`
 
-```shell
-sudo sysctl -w vm.max_map_count=262144
-```
+SQLite needs working file locks. If you see this error, your cache volume is most likely on a network file system, move it to local storage.
 
-To apply the change permanently depends on your host operating system:
+### Cache folder is on a network filesystem
 
-* For example on Ubuntu Server add `vm.max_map_count = 262144` to the file `/etc/sysctl.conf`.
-* On Arch based systems create a file `/etc/sysctl.d/max_map_count.conf` with the content `vm.max_map_count = 262144`.
-* On any other platform look up in the documentation on how to pass kernel parameters.
-
-### Permissions for elasticsearch
-
-If you see a message similar to `Unable to access 'path.repo' (/usr/share/elasticsearch/data/snapshot)` or `failed to obtain node locks, tried [/usr/share/elasticsearch/data]` and `maybe these locations are not writable` when initially starting elasticsearch, that probably means the container is not allowed to write files to the volume.
-To fix that issue, shutdown the container and on your host machine run:
-
-```shell
-chown 1000:0 -R /path/to/mount/point
-```
-
-This will match the permissions with the **UID** and **GID** of elasticsearch process within the container and should fix the issue.
+The storage check at startup found the cache volume on NFS, SMB or a similar file system. File locking is not reliable there and that can damage the database. Move the cache volume to a local disk. If you are sure that locking works on your setup, set `TA_ALLOW_NETWORK_FS=true` to start anyway.
 
 ### Disk usage
 
-The Elasticsearch index will turn to ***read only*** if the disk usage of the container goes above 95% until the usage drops below 90% again, you will see error messages like `disk usage exceeded flood-stage watermark`.
-
-Similar to that, TubeArchivist will become all sorts of messed up when running out of disk space. There are some error messages in the logs when that happens, but it's best to make sure to have enough disk space before starting to download.
-
-## `error setting rlimit`
-
-If you are seeing errors like `failed to create shim: OCI runtime create failed` and `error during container init: error setting rlimits`, this means docker can't set these limits, usually because they are set at another place or are incompatible because of other reasons. Solution is to remove the `ulimits` key from the ES container in your docker compose and start again.
-
-This can happen if you have nested virtualizations, e.g. LXC running Docker in Proxmox.
+TubeArchivist will become all sorts of messed up when running out of disk space. There are some error messages in the logs when that happens, but it's best to make sure to have enough disk space before starting to download.
 
 ## Known limitations
 

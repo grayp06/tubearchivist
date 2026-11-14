@@ -9,9 +9,9 @@ from time import sleep
 from typing import Literal, TypedDict
 
 import requests
-from appsettings.src.snapshot import ElasticSnapshot
-from common.src.es_connect import ElasticWrap
-from common.src.ta_redis import RedisArchivist
+from appsettings.src.snapshot import IndexSnapshot
+from common.src.index_client import IndexClient
+from common.src.state_store import StateStore
 from django.conf import settings
 
 
@@ -107,7 +107,7 @@ class AppConfig:
 
     def get_config(self) -> AppConfigType:
         """get config from ES"""
-        response, status_code = ElasticWrap(self.ES_PATH).get()
+        response, status_code = IndexClient(self.ES_PATH).get()
         if not status_code == 200:
             raise ValueError(f"no config found at {self.ES_PATH}")
 
@@ -126,7 +126,7 @@ class AppConfig:
             else:
                 new_config[key] = value
 
-        response, status_code = ElasticWrap(self.ES_PATH).post(new_config)
+        response, status_code = IndexClient(self.ES_PATH).post(new_config)
         if not status_code == 200:
             print(response)
 
@@ -138,7 +138,7 @@ class AppConfig:
         """apply hooks for some config keys"""
         for config_value, updated_value in data:
             if config_value == "application.enable_snapshot" and updated_value:
-                ElasticSnapshot().setup()
+                IndexSnapshot().setup()
 
     @staticmethod
     def _fail_message(message_line):
@@ -152,11 +152,11 @@ class AppConfig:
             "messages": [message_line],
             "id": "0000",
         }
-        RedisArchivist().set_message(key, message=message, expire=True)
+        StateStore().set_message(key, message=message, expire=True)
 
     def sync_defaults(self):
         """sync defaults at startup, needs to be called with __new__"""
-        return ElasticWrap(self.ES_PATH).post(self.CONFIG_DEFAULTS)
+        return IndexClient(self.ES_PATH).post(self.CONFIG_DEFAULTS)
 
     def add_new_defaults(self) -> list[str]:
         """add new default config values to ES, called at startup"""
@@ -199,7 +199,7 @@ class AppConfig:
         if not cleared:
             return []
 
-        response, status_code = ElasticWrap(self.ES_PATH).post(self.config)
+        response, status_code = IndexClient(self.ES_PATH).post(self.config)
         if not status_code == 200:
             print(response)
 
@@ -229,7 +229,7 @@ class ReleaseVersion:
                 "version": new_version,
                 "is_breaking": self.is_breaking,
             }
-            RedisArchivist().set_message(self.NEW_KEY, message)
+            StateStore().set_message(self.NEW_KEY, message)
             print(f"[{self.local_version}]: found new version {new_version}")
 
     def get_local_version(self) -> str:
@@ -271,12 +271,12 @@ class ReleaseVersion:
         message_parsed = self._parse_version(message.get("version"))
 
         if local_parsed >= message_parsed:
-            RedisArchivist().del_message(self.NEW_KEY)
+            StateStore().del_message(self.NEW_KEY)
             return settings.TA_VERSION
 
         return False
 
     def get_update(self) -> dict | None:
         """return new version dict if available"""
-        message = RedisArchivist().get_message_dict(self.NEW_KEY)
+        message = StateStore().get_message_dict(self.NEW_KEY)
         return message or None

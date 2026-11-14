@@ -5,8 +5,8 @@ functionality:
 
 from datetime import datetime
 
-from common.src.es_connect import ElasticWrap
-from common.src.ta_redis import RedisArchivist
+from common.src.index_client import IndexClient
+from common.src.state_store import StateStore
 from common.src.urlparser import Parser
 
 
@@ -18,7 +18,6 @@ class WatchState:
         self.is_watched = is_watched
         self.user_id = user_id
         self.stamp = int(datetime.now().timestamp())
-        self.pipeline = f"_ingest/pipeline/watch_{youtube_id}"
 
     def change(self):
         """change watched state of item(s)"""
@@ -33,11 +32,8 @@ class WatchState:
         if url_type == "playlist":
             self.reset_playlist_progress()
 
-        self._add_pipeline()
-        path = f"ta_video/_update_by_query?pipeline=watch_{self.youtube_id}"
         data = self._build_update_data(url_type)
-        _, _ = ElasticWrap(path).post(data)
-        self._delete_pipeline()
+        _, _ = IndexClient("ta_video/_update_by_query").post(data)
 
     def _dedect_type(self):
         """find youtube id type"""
@@ -51,9 +47,9 @@ class WatchState:
         data = {"doc": {"player": {"watched": self.is_watched}}}
         if self.is_watched:
             data["doc"]["player"]["watched_date"] = self.stamp
-        response, status_code = ElasticWrap(path).post(data=data)
+        response, status_code = IndexClient(path).post(data=data)
         key = f"{self.user_id}:progress:{self.youtube_id}"
-        RedisArchivist().del_message(key)
+        StateStore().del_message(key)
         if status_code != 200:
             print(response)
             raise ValueError("failed to mark video as watched")
@@ -76,7 +72,7 @@ class WatchState:
 
     def _reset_list(self, video_ids: list[str]):
         """reset list of video ids"""
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         all_ids = redis_con.list_keys(f"{self.user_id}:progress")
         for progress_id in all_ids:
             video_id = progress_id.split(":")[-1]
@@ -105,30 +101,12 @@ class WatchState:
                         },
                     ],
                 }
-            }
+            },
+            "script": self._set_watched,
         }
 
-    def _add_pipeline(self):
-        """add ingest pipeline"""
-        data = {
-            "description": f"{self.youtube_id}: watched {self.is_watched}",
-            "processors": [
-                {
-                    "set": {
-                        "field": "player.watched",
-                        "value": self.is_watched,
-                    }
-                },
-                {
-                    "set": {
-                        "field": "player.watched_date",
-                        "value": self.stamp,
-                    }
-                },
-            ],
-        }
-        _, _ = ElasticWrap(self.pipeline).put(data)
-
-    def _delete_pipeline(self):
-        """delete pipeline"""
-        ElasticWrap(self.pipeline).delete()
+    def _set_watched(self, source: dict) -> None:
+        """update script to set watched state of video"""
+        player = source.setdefault("player", {})
+        player["watched"] = self.is_watched
+        player["watched_date"] = self.stamp

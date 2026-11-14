@@ -13,14 +13,14 @@ from datetime import datetime
 from appsettings.src.config import AppConfig
 from channel.src.index import YoutubeChannel
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import (
     get_channel_overwrites,
     get_playlists,
     ignore_filelist,
     rand_sleep,
 )
-from common.src.ta_redis import RedisQueue
+from common.src.index_client import IndexClient, IndexPaginate
+from common.src.state_store import StateQueue
 from common.src.urlparser import ParsedURLType
 from download.src.queue import PendingList
 from download.src.yt_dlp_base import YtWrap
@@ -81,8 +81,8 @@ class VideoDownloader(DownloaderBase):
             self._notify(video_data, "Add video metadata to index", progress=1)
             video_type = VideoTypeEnum(video_data["vid_type"])
             vid_dict = index_new_video(youtube_id, video_type=video_type)
-            RedisQueue(self.CHANNEL_QUEUE).add(channel_id)
-            RedisQueue(self.VIDEO_QUEUE).add(youtube_id)
+            StateQueue(self.CHANNEL_QUEUE).add(channel_id)
+            StateQueue(self.VIDEO_QUEUE).add(youtube_id)
 
             self._notify(video_data, "Move downloaded file to archive")
             self.move_to_archive(vid_dict)
@@ -121,7 +121,7 @@ class VideoDownloader(DownloaderBase):
             ],
         }
         path = "ta_download/_search"
-        response, _ = ElasticWrap(path).get(data=data)
+        response, _ = IndexClient(path).get(data=data)
         if not response["hits"]["hits"]:
             return False
 
@@ -228,7 +228,7 @@ class VideoDownloader(DownloaderBase):
     def _handle_error(youtube_id, message):
         """store error message"""
         data = {"doc": {"message": message}}
-        _, _ = ElasticWrap(f"ta_download/_update/{youtube_id}").post(data=data)
+        _, _ = IndexClient(f"ta_download/_update/{youtube_id}").post(data=data)
 
     def move_to_archive(self, vid_dict):
         """move downloaded video from cache to archive"""
@@ -255,19 +255,16 @@ class VideoDownloader(DownloaderBase):
     def _delete_from_pending(youtube_id):
         """delete downloaded video from pending index if its there"""
         path = f"ta_download/_doc/{youtube_id}?refresh=true"
-        _, _ = ElasticWrap(path).delete()
+        _, _ = IndexClient(path).delete()
 
     def _reset_auto(self):
         """reset autostart to defaults after queue stop"""
         path = "ta_download/_update_by_query"
         data = {
             "query": {"term": {"auto_start": {"value": True}}},
-            "script": {
-                "source": "ctx._source.auto_start = false",
-                "lang": "painless",
-            },
+            "script": lambda source: source.update({"auto_start": False}),
         }
-        response, _ = ElasticWrap(path).post(data=data)
+        response, _ = IndexClient(path).post(data=data)
         updated = response.get("updated")
         if updated:
             print(f"[download] reset auto start on {updated} videos.")
@@ -285,7 +282,7 @@ class DownloadPostProcess(DownloaderBase):
         self.get_comments()
         self.embed_metadata()
 
-        RedisQueue(self.VIDEO_QUEUE).clear()
+        StateQueue(self.VIDEO_QUEUE).clear()
 
     def auto_delete_all(self):
         """handle auto delete"""
@@ -365,7 +362,7 @@ class DownloadPostProcess(DownloaderBase):
         """match videos with playlists"""
         self.add_playlists_to_refresh()
 
-        queue = RedisQueue(self.PLAYLIST_QUEUE)
+        queue = StateQueue(self.PLAYLIST_QUEUE)
         while True:
             total = queue.max_score()
             playlist_id, idx = queue.get_next()
@@ -416,11 +413,11 @@ class DownloadPostProcess(DownloaderBase):
         """add subscribed playlists to refresh"""
         playlists = get_playlists(subscribed_only=True, source=["playlist_id"])
         to_add = [i["playlist_id"] for i in playlists]
-        RedisQueue(self.PLAYLIST_QUEUE).add_list(to_add)
+        StateQueue(self.PLAYLIST_QUEUE).add_list(to_add)
 
     def _add_channel_playlists(self):
         """add playlists from channels to refresh"""
-        queue = RedisQueue(self.CHANNEL_QUEUE)
+        queue = StateQueue(self.CHANNEL_QUEUE)
         while True:
             channel_id, _ = queue.get_next()
             if not channel_id:
@@ -436,13 +433,13 @@ class DownloadPostProcess(DownloaderBase):
             if overwrites.get("index_playlists"):
                 channel.get_all_playlists()
                 to_add = [i[0] for i in channel.all_playlists]
-                RedisQueue(self.PLAYLIST_QUEUE).add_list(to_add)
+                StateQueue(self.PLAYLIST_QUEUE).add_list(to_add)
 
     def _add_video_playlists(self):
         """add other playlists for quick sync"""
-        all_playlists = RedisQueue(self.PLAYLIST_QUEUE).get_all()
+        all_playlists = StateQueue(self.PLAYLIST_QUEUE).get_all()
         must_not = [{"terms": {"playlist_id": all_playlists}}]
-        video_ids = RedisQueue(self.VIDEO_QUEUE).get_all()
+        video_ids = StateQueue(self.VIDEO_QUEUE).get_all()
         must = [{"terms": {"playlist_entries.youtube_id": video_ids}}]
         data = {
             "query": {"bool": {"must_not": must_not, "must": must}},
@@ -450,11 +447,11 @@ class DownloadPostProcess(DownloaderBase):
         }
         playlists = IndexPaginate("ta_playlist", data).get_results()
         to_add = [i["playlist_id"] for i in playlists]
-        RedisQueue(self.PLAYLIST_QUICK).add_list(to_add)
+        StateQueue(self.PLAYLIST_QUICK).add_list(to_add)
 
     def match_videos(self) -> None:
         """scan rest of indexed playlists to match videos"""
-        queue = RedisQueue(self.PLAYLIST_QUICK)
+        queue = StateQueue(self.PLAYLIST_QUICK)
         while True:
             total = queue.max_score()
             playlist_id, idx = queue.get_next()
@@ -483,7 +480,7 @@ class DownloadPostProcess(DownloaderBase):
 
     def get_comments(self):
         """get comments from youtube"""
-        video_queue = RedisQueue(self.VIDEO_QUEUE)
+        video_queue = StateQueue(self.VIDEO_QUEUE)
         comment_list = CommentList(task=self.task)
         comment_list.add(video_ids=video_queue.get_all())
         comment_list.index()
@@ -493,7 +490,7 @@ class DownloadPostProcess(DownloaderBase):
         if not self.config["downloads"].get("add_metadata"):
             return
 
-        queue = RedisQueue(self.VIDEO_QUEUE)
+        queue = StateQueue(self.VIDEO_QUEUE)
         total = queue.max_score()
         video_ids = queue.get_all()
 

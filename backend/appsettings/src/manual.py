@@ -19,7 +19,6 @@ from PIL import Image
 from video.src.comments import Comments
 from video.src.index import YoutubeVideo
 from video.src.meta_embed import IndexFromEmbed
-from yt_dlp.utils import ISO639Utils
 
 
 class ImportFolderScanner:
@@ -115,6 +114,9 @@ class ImportFolderScanner:
 
     def _detect_base_name(self, file_path):
         """extract base_name and ext for matching"""
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import ISO639Utils
+
         base_name_raw, ext = os.path.splitext(file_path)
         base_name, ext2 = os.path.splitext(base_name_raw)
 
@@ -319,6 +321,9 @@ class ImportFolderScanner:
         if ext == ".webm":
             print(f"{media_path}: subtitle extract from webm not supported")
             return
+
+        # pylint: disable=import-outside-toplevel
+        from yt_dlp.utils import ISO639Utils
 
         for idx, stream in enumerate(streams["streams"]):
             if stream["codec_type"] == "subtitle":

@@ -11,7 +11,7 @@ class CustomPeriodicTaskSerializer(serializers.ModelSerializer):
     """serialize CustomPeriodicTask"""
 
     schedule = serializers.CharField(source="schedule_parsed")
-    schedule_human = serializers.CharField(source="crontab.human_readable")
+    schedule_human = serializers.CharField()
     last_run_at = serializers.DateTimeField()
     config = serializers.DictField(source="task_config")
 
@@ -27,7 +27,7 @@ class CustomPeriodicTaskSerializer(serializers.ModelSerializer):
 
 
 class TaskResultSerializer(serializers.Serializer):
-    """serialize task result stored in redis"""
+    """serialize stored task result"""
 
     status = serializers.ChoiceField(
         choices=[

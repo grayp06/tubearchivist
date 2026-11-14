@@ -14,7 +14,8 @@ Functionality shared between apps.
 
 Defines views on the root `/api/*` path. Has base views to inherit from.
 
-- Connections to ES and Redis
+- SQLite document store with search, replaces the search server (`index_store.py`, `index_query.py`, `index_schema.py`)
+- SQLite key value store and queues (`state_store.py`)
 - Searching
 - URL parser
 - Collection of helper functions
@@ -59,11 +60,13 @@ Builds aggregations views for the statistics dashboard.
 Defines views at `/api/stats/*`.
 
 ### task
-Defines tasks for Celery. 
+Defines and runs background tasks.
 
 Defines views at `/api/task/*`.
 
 - Has main `tasks.py` with all shared_task definitions
+- Has the task runner and the dispatcher thread starting tasks as short lived processes
+- Has the cron scheduler
 - Has `CustomPeriodicTask` model
 - Implements apprise notifications links
 - Implements schedule functionality

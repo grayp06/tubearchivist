@@ -83,34 +83,6 @@ function sync_test {
 
 
 # update latest tag compatible es for set and forget
-function sync_latest_es {
-
-    VERSION=$(grep "bbilly1/tubearchivist-es" docker-compose.yml | awk '{print $NF}')
-    printf "\nsync new ES version %s\nContinue?\n" "$VERSION"
-    read -rn 1
-
-    if [[ $(systemctl is-active docker) != 'active' ]]; then
-        echo "starting docker"
-        sudo systemctl start docker
-    fi
-
-    sudo docker image pull docker.elastic.co/elasticsearch/elasticsearch:"$VERSION"
-
-    sudo docker tag \
-        docker.elastic.co/elasticsearch/elasticsearch:"$VERSION" \
-        bbilly1/tubearchivist-es
-
-    sudo docker tag \
-        docker.elastic.co/elasticsearch/elasticsearch:"$VERSION" \
-        bbilly1/tubearchivist-es:"$VERSION"
-
-    sudo docker push bbilly1/tubearchivist-es
-    sudo docker push bbilly1/tubearchivist-es:"$VERSION"
-
-}
-
-
-# publish unstable tag to docker
 function sync_unstable {
 
     if [[ $(systemctl is-active docker) != 'active' ]]; then
@@ -203,10 +175,8 @@ elif [[ $1 == "docker" ]]; then
     sync_docker
 elif [[ $1 == "unstable" ]]; then
     sync_unstable
-elif [[ $1 == "es" ]]; then
-    sync_latest_es
 else
-    echo "valid options are: blackhole | test | docker | unstable | es"
+    echo "valid options are: blackhole | test | docker | unstable"
 fi
 
 

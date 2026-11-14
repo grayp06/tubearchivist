@@ -7,8 +7,8 @@ import os
 
 from appsettings.src.config import AppConfig
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import IndexPaginate
 from common.src.helper import ignore_filelist, rand_sleep
+from common.src.index_client import IndexPaginate
 from video.src.comments import Comments
 from video.src.index import YoutubeVideo, index_new_video
 from video.src.meta_embed import IndexFromEmbed

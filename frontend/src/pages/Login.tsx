@@ -158,13 +158,6 @@ const Login = () => {
                   >
                     TA_HOST={window.location.origin}
                   </li>
-                  <li
-                    onClick={() => {
-                      navigator.clipboard.writeText('REDIS_CON=redis://archivist-redis:6379');
-                    }}
-                  >
-                    REDIS_CON=redis://archivist-redis:6379
-                  </li>
                 </ul>
               </div>
             </div>

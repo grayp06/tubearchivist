@@ -1,6 +1,6 @@
 """base classes to inherit from"""
 
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 from common.src.index_generic import Pagination
 from common.src.search_processor import SearchProcess, process_aggs
 from rest_framework import permissions
@@ -52,7 +52,7 @@ class ApiBaseView(APIView):
     def get_document(self, document_id, progress_match=None):
         """get single document from es"""
         path = f"{self.search_base}{document_id}"
-        response, status_code = ElasticWrap(path).get()
+        response, status_code = IndexClient(path).get()
         try:
             self.response = SearchProcess(
                 response, match_video_user_progress=progress_match
@@ -77,7 +77,7 @@ class ApiBaseView(APIView):
         if pagination:
             self.initiate_pagination(request)
 
-        es_handler = ElasticWrap(self.search_base)
+        es_handler = IndexClient(self.search_base)
         response, status_code = es_handler.get(data=self.data)
         self.response["data"] = SearchProcess(
             response, match_video_user_progress=progress_match
@@ -96,7 +96,7 @@ class ApiBaseView(APIView):
     def get_aggs(self):
         """get aggs alone"""
         self.data["size"] = 0
-        response, _ = ElasticWrap(self.search_base).get(data=self.data)
+        response, _ = IndexClient(self.search_base).get(data=self.data)
         process_aggs(response)
 
         self.response = response.get("aggregations")

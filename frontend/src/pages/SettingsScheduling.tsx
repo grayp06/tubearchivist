@@ -17,6 +17,8 @@ import testAppriseNotificationUrl, {
 } from '../api/actions/testAppriseNotificationUrl';
 import deleteAppriseNotificationUrl from '../api/actions/deleteAppriseNotificationUrl';
 import { ApiError, ApiResponseType } from '../functions/APIClient';
+import loadYtDlpStatus, { YtDlpStatusType } from '../api/loader/loadYtDlpStatus';
+import updateTaskByName from '../api/actions/updateTaskByName';
 
 const getGroupedSchedule = (
   scheduleResponse: ApiResponseType<ScheduleResponseType> | undefined,
@@ -25,14 +27,21 @@ const getGroupedSchedule = (
 
   const groupedSchedules = Object.groupBy(scheduleResponseData || [], ({ name }) => name);
 
-  const { update_subscribed, download_pending, run_backup, check_reindex, thumbnail_check } =
-    groupedSchedules;
+  const {
+    update_subscribed,
+    download_pending,
+    run_backup,
+    check_reindex,
+    thumbnail_check,
+    update_ytdlp,
+  } = groupedSchedules;
 
   const updateSubscribedSchedule = update_subscribed?.pop();
   const downloadPendingSchedule = download_pending?.pop();
   const runBackup = run_backup?.pop();
   const checkReindexSchedule = check_reindex?.pop();
   const thumbnailCheckSchedule = thumbnail_check?.pop();
+  const ytdlpUpdateSchedule = update_ytdlp?.pop();
 
   return {
     updateSubscribedSchedule,
@@ -40,6 +49,7 @@ const getGroupedSchedule = (
     runBackup,
     checkReindexSchedule,
     thumbnailCheckSchedule,
+    ytdlpUpdateSchedule,
     download_pending,
   };
 };
@@ -56,6 +66,8 @@ const SettingsScheduling = () => {
   const [checkReindex, setCheckReindex] = useState<string | undefined>();
   const [checkReindexDays, setCheckReindexDays] = useState<number | undefined>();
   const [thumbnailCheck, setThumbnailCheck] = useState<string | undefined>();
+  const [ytdlpUpdate, setYtdlpUpdate] = useState<string | undefined>();
+  const [ytdlpStatus, setYtdlpStatus] = useState<YtDlpStatusType>();
   const [zipBackup, setZipBackup] = useState<string | undefined>();
   const [zipBackupDays, setZipBackupDays] = useState<number | undefined>();
   const [notificationUrl, setNotificationUrl] = useState<string | undefined>();
@@ -64,6 +76,7 @@ const SettingsScheduling = () => {
   const [updateSubscribedError, setUpdateSubscribedError] = useState<string | null>(null);
   const [downloadPendingError, setDownloadPendingError] = useState<string | null>(null);
   const [thumnailCheckError, setThumnailCheckError] = useState<string | null>(null);
+  const [ytdlpUpdateError, setYtdlpUpdateError] = useState<string | null>(null);
   const [zipBackupError, setZipBackupError] = useState<string | null>(null);
   const [testNotificationMessage, setTestNotificationMessage] = useState<{
     message: string;
@@ -77,6 +90,8 @@ const SettingsScheduling = () => {
       if (refresh) {
         const scheduleResponse = await loadSchedule();
         const appriseNotificationResponse = await loadAppriseNotification();
+        const ytdlpStatusResponse = await loadYtDlpStatus();
+        setYtdlpStatus(ytdlpStatusResponse.data);
 
         setScheduleResponse(scheduleResponse);
         setAppriseNotification(appriseNotificationResponse);
@@ -87,6 +102,7 @@ const SettingsScheduling = () => {
           runBackup,
           thumbnailCheckSchedule,
           updateSubscribedSchedule,
+          ytdlpUpdateSchedule,
         } = getGroupedSchedule(scheduleResponse);
 
         setUpdateSubscribed(updateSubscribedSchedule?.schedule || '');
@@ -94,6 +110,7 @@ const SettingsScheduling = () => {
         setCheckReindex(checkReindexSchedule?.schedule || '');
         setCheckReindexDays(checkReindexSchedule?.config?.days || 0);
         setThumbnailCheck(thumbnailCheckSchedule?.schedule || '');
+        setYtdlpUpdate(ytdlpUpdateSchedule?.schedule || '');
         setZipBackup(runBackup?.schedule || '');
         setZipBackupDays(runBackup?.config?.rotate || 0);
 
@@ -113,6 +130,7 @@ const SettingsScheduling = () => {
     runBackup,
     thumbnailCheckSchedule,
     updateSubscribedSchedule,
+    ytdlpUpdateSchedule,
     download_pending,
   } = getGroupedSchedule(scheduleResponse);
 
@@ -413,6 +431,87 @@ const SettingsScheduling = () => {
               }}
             />
             {thumnailCheckError && <p className="danger-zone">{thumnailCheckError}</p>}
+          </div>
+        </div>
+        <div className="settings-group">
+          <h2>yt-dlp Update</h2>
+          <div className="settings-item">
+            <p>
+              Installed yt-dlp version:{' '}
+              <span className="settings-current">{ytdlpStatus?.version || 'unknown'}</span>
+              {ytdlpStatus?.bundled && ytdlpStatus.bundled !== ytdlpStatus.version && (
+                <> (shipped with the image: {ytdlpStatus.bundled})</>
+              )}
+            </p>
+            <p>
+              Automatic updates: <span className="settings-current">{ytdlpStatus?.channel}</span>
+              {ytdlpStatus?.checked && (
+                <>
+                  , last check {new Date(ytdlpStatus.checked * 1000).toLocaleString()}, latest
+                  release {ytdlpStatus.latest}
+                </>
+              )}
+              <Button
+                label="Check now"
+                onClick={async () => {
+                  await updateTaskByName('update_ytdlp');
+                  setRefresh(true);
+                }}
+              />
+            </p>
+            <p>
+              Current yt-dlp update schedule:{' '}
+              <span className="settings-current">
+                {!ytdlpUpdateSchedule && 'False'}
+                {ytdlpUpdateSchedule && (
+                  <>
+                    {ytdlpUpdateSchedule?.schedule}{' '}
+                    <Button
+                      label="Delete"
+                      className="danger-button"
+                      onClick={async () => {
+                        await deleteTaskSchedule('update_ytdlp');
+
+                        setRefresh(true);
+                      }}
+                    />
+                  </>
+                )}
+              </span>
+            </p>
+            <p>
+              Periodically look for a new yt-dlp version and install it. Enabled by default,
+              downloads use the new version right away, no restart needed:
+            </p>
+
+            <input
+              type="text"
+              value={ytdlpUpdate}
+              onChange={e => {
+                setYtdlpUpdate(e.currentTarget.value);
+              }}
+            />
+            <Button
+              label="Save"
+              onClick={async () => {
+                try {
+                  await createTaskSchedule('update_ytdlp', {
+                    schedule: ytdlpUpdate,
+                  });
+                  setYtdlpUpdateError('');
+                } catch (error) {
+                  const apiError = error as ApiError;
+                  if (apiError.status && apiError.message) {
+                    setYtdlpUpdateError(`Error ${apiError.status}: ${apiError.message}`);
+                  } else {
+                    setYtdlpUpdateError('An unexpected error occurred.');
+                  }
+                }
+                setYtdlpUpdate('');
+                setRefresh(true);
+              }}
+            />
+            {ytdlpUpdateError && <p className="danger-zone">{ytdlpUpdateError}</p>}
           </div>
         </div>
         <div className="settings-group">

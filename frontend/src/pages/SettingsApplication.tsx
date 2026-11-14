@@ -874,8 +874,8 @@ const SettingsApplication = () => {
               {userConfig.show_help_text && (
                 <div className="help-text">
                   <p>
-                    Automatically create daily deduplicated snapshots of the index, stored in
-                    Elasticsearch. Restoring from snapshot replaced your current index with the
+                    Automatically create daily snapshots of the index, stored as database files in
+                    the cache folder. Restoring from snapshot replaces your current index with the
                     index from the snapshot.
                   </p>
                 </div>

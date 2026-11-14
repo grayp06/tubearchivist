@@ -12,13 +12,13 @@ from appsettings.src.config import AppConfig
 from channel.src.index import YoutubeChannel
 from channel.src.remote_query import get_last_channel_videos
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import (
     get_channels,
     get_duration_str,
     is_shorts,
     rand_sleep,
 )
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.urlparser import ParsedURLType
 from download.serializers import DownloadItemSerializer
 from download.src.queue_interact import PendingInteract
@@ -64,6 +64,7 @@ class PendingIndex:
         data = {
             "query": {"match_all": {}},
             "sort": [{"published": {"order": "desc"}}],
+            "_source": ["youtube_id"],
         }
         self.all_videos = IndexPaginate("ta_video", data).get_results()
         for video in self.all_videos:
@@ -482,7 +483,7 @@ class PendingList(PendingIndex):
         # add last newline
         bulk_list.append("\n")
         query_str = "\n".join(bulk_list)
-        response, status_code = ElasticWrap("_bulk").post(
+        response, status_code = IndexClient("_bulk").post(
             query_str, ndjson=True
         )
         if status_code not in [200, 201]:

@@ -15,7 +15,7 @@ from common.serializers import (
     WatchedDataSerializer,
 )
 from common.src.searching import SearchForm
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.src.watched import WatchState
 from common.views_base import AdminOnly, ApiBaseView
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -196,7 +196,7 @@ class NotificationView(ApiBaseView):
         if filter_by in self.valid_filters:
             query = f"{query}:{filter_by}"
 
-        notifications = RedisArchivist().list_items(query)
+        notifications = StateStore().list_items(query)
         response_serializer = NotificationSerializer(notifications, many=True)
 
         return Response(response_serializer.data)

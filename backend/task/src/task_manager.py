@@ -1,11 +1,11 @@
 """
 functionality:
-- interact with in redis stored task results
-- handle threads and locks
+- interact with stored task results
+- handle task locks and commands
 """
 
-from common.src.ta_redis import TaskRedis
-from task.celery import app as celery_app
+from common.src.state_store import TaskStore
+from task.src.task_queue import TaskQueue
 
 
 class TaskManager:
@@ -13,7 +13,7 @@ class TaskManager:
 
     def get_all_results(self):
         """return all task results"""
-        handler = TaskRedis()
+        handler = TaskStore()
         all_keys = handler.get_all()
         if not all_keys:
             return False
@@ -30,7 +30,7 @@ class TaskManager:
 
     def get_task(self, task_id):
         """get single task"""
-        return TaskRedis().get_single(task_id)
+        return TaskStore().get_single(task_id)
 
     def is_pending(self, task):
         """check if task_name is pending, pass task object"""
@@ -64,13 +64,14 @@ class TaskManager:
             "name": task.name,
             "task_id": task.request.id,
         }
-        TaskRedis().set_key(task.request.id, message)
+        TaskStore().set_key(task.request.id, message)
 
     def fail_pending(self):
         """
         mark all pending as failed,
         run at startup to recover from hard reset
         """
+        TaskQueue().recover()
         all_results = self.get_all_results()
         if not all_results:
             return
@@ -78,7 +79,7 @@ class TaskManager:
         for result in all_results:
             if result.get("status") == "PENDING":
                 result["status"] = "FAILED"
-                TaskRedis().set_key(result["task_id"], result, expire=True)
+                TaskStore().set_key(result["task_id"], result, expire=True)
 
 
 class TaskCommand:
@@ -86,7 +87,10 @@ class TaskCommand:
 
     def start(self, task_name, kwargs: dict | None = None):
         """start task by task_name, only pass task that don't take args"""
-        task = celery_app.tasks.get(task_name).delay(**(kwargs or {}))
+        # pylint: disable=import-outside-toplevel
+        from task.src.runner import get_task
+
+        task = get_task(task_name).delay(**(kwargs or {}))
         message = {
             "task_id": task.id,
             "status": task.status,
@@ -101,9 +105,13 @@ class TaskCommand:
         needs to be implemented in task to take effect
         """
         print(f"[task][{task_id}]: received STOP signal.")
-        TaskRedis().set_command(task_id, "STOP")
+        TaskStore().set_command(task_id, "STOP")
 
     def kill(self, task_id):
         """send kill signal to task_id"""
         print(f"[task][{task_id}]: received KILL signal.")
-        celery_app.control.revoke(task_id, terminate=True)
+        # pylint: disable=import-outside-toplevel
+        from task.src.dispatcher import wake_dispatcher
+
+        TaskStore().set_command(task_id, "KILL")
+        wake_dispatcher()

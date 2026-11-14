@@ -1,6 +1,6 @@
 """build query for video fetching"""
 
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from playlist.src.index import YoutubePlaylist
 from video.src.constants import OrderEnum, SortEnum, VideoTypeEnum
 
@@ -65,7 +65,7 @@ class QueryBuilder:
         return {"match": {"player.watched": watch == "watched"}}
 
     def _build_continue_must(self):
-        results = RedisArchivist().list_items(f"{self.user_id}:progress:")
+        results = StateStore().list_items(f"{self.user_id}:progress:")
         if not results:
             return None
 

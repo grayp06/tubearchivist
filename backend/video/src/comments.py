@@ -8,9 +8,9 @@ Functionality:
 from datetime import datetime
 
 from appsettings.src.config import AppConfig
-from common.src.es_connect import ElasticWrap
 from common.src.helper import rand_sleep
-from common.src.ta_redis import RedisQueue
+from common.src.index_client import IndexClient
+from common.src.state_store import StateQueue
 from download.src.yt_dlp_base import YtWrap
 
 
@@ -145,22 +145,22 @@ class Comments:
     def upload_comments(self):
         """upload comments to es"""
         print(f"{self.youtube_id}: upload comments")
-        _, _ = ElasticWrap(self.es_path).put(self.json_data)
+        _, _ = IndexClient(self.es_path).put(self.json_data)
 
         vid_path = f"ta_video/_update/{self.youtube_id}"
         data = {
             "doc": {"comment_count": len(self.json_data["comment_comments"])}
         }
-        _, _ = ElasticWrap(vid_path).post(data=data)
+        _, _ = IndexClient(vid_path).post(data=data)
 
     def delete_comments(self):
         """delete comments from es"""
         print(f"{self.youtube_id}: delete comments")
-        _, _ = ElasticWrap(self.es_path).delete(refresh=True)
+        _, _ = IndexClient(self.es_path).delete(refresh=True)
 
     def get_es_comments(self):
         """get comments from ES"""
-        response, statuscode = ElasticWrap(self.es_path).get()
+        response, statuscode = IndexClient(self.es_path).get()
         if statuscode == 404:
             print(f"comments: not found {self.youtube_id}")
             return False
@@ -204,11 +204,11 @@ class CommentList:
         if not self.config["downloads"].get("comment_max"):
             return
 
-        RedisQueue(self.COMMENT_QUEUE).add_list(video_ids)
+        StateQueue(self.COMMENT_QUEUE).add_list(video_ids)
 
     def index(self):
         """run comment index"""
-        queue = RedisQueue(self.COMMENT_QUEUE)
+        queue = StateQueue(self.COMMENT_QUEUE)
         while True:
             total = queue.max_score()
             youtube_id, idx = queue.get_next()
