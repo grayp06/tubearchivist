@@ -323,7 +323,9 @@ def verify_downloads(client: Client) -> dict:
     is_ok = nav.get("has_videos") and nav.get("has_streams")
     is_ok = is_ok and nav.get("has_shorts") and not nav.get("has_pending")
     client.check("channel navigation", bool(is_ok), nav)
-    search = client.call("GET", "/api/search/?query=tomatos+gard")
+    # misspelled and incomplete on purpose
+    query = "tomatos+gard"  # codespell:ignore
+    search = client.call("GET", f"/api/search/?query={query}")
     results = search["results"]["video_results"]
     client.check("fuzzy full text search", len(results) > 0)
 
