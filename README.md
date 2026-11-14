@@ -60,6 +60,8 @@ This project requires docker. Ensure it is installed and running on your system.
 
 Take a look at the example [docker-compose.yml](docker-compose.yml) and configure the required environment variables.
 
+You don't need to build the image yourself: the [docker_image](.github/workflows/docker_image.yml) workflow builds it for `amd64` and `arm64`, runs the tests and publishes it to `ghcr.io/grayp06/tubearchivist`. The tag `latest` follows the default branch, every other branch is published under its branch name. Pull the new image with `docker compose pull && docker compose up -d`.
+
 `TA_PASSWORD` can be suffixed with `_FILE` to allow passing in the password as a secret.
 
 ### Environment variables
