@@ -9,8 +9,8 @@ from time import sleep
 
 import requests
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import is_missing
+from common.src.index_client import IndexClient, IndexPaginate
 from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image, ImageFile, UnidentifiedImageError
 
@@ -486,7 +486,7 @@ class ThumbValidator:
     def _get_total(index_name):
         """get total documents in index"""
         path = f"{index_name}/_count"
-        response, _ = ElasticWrap(path).get()
+        response, _ = IndexClient(path).get()
 
         return response.get("count")
 
@@ -518,7 +518,7 @@ class ThumbFilesystem:
     def _get_total(self):
         """get total documents in index"""
         path = f"{self.INDEX_NAME}/_count"
-        response, _ = ElasticWrap(path).get()
+        response, _ = IndexClient(path).get()
 
         return response.get("count")
 

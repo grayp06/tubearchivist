@@ -6,7 +6,7 @@ functionality:
 import math
 
 from appsettings.src.config import AppConfig
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 from download.src.yt_dlp_base import YtWrap
 from user.src.user_config import UserConfig
 
@@ -56,13 +56,13 @@ class YouTubeItem:
     def get_from_es(self, print_error: bool = True) -> None:
         """get indexed data from elastic search"""
         print(f"{self.youtube_id}: get metadata from es")
-        resp, _ = ElasticWrap(f"{self.es_path}").get(print_error=print_error)
+        resp, _ = IndexClient(f"{self.es_path}").get(print_error=print_error)
         source = resp.get("_source")
         self.json_data = source
 
     def upload_to_es(self):
         """add json_data to elastic"""
-        _, _ = ElasticWrap(self.es_path).put(self.json_data, refresh=True)
+        _, _ = IndexClient(self.es_path).put(self.json_data, refresh=True)
 
     def deactivate(self):
         """deactivate document in es"""
@@ -74,12 +74,12 @@ class YouTubeItem:
         }
         path = f"{self.index_name}/_update/{self.youtube_id}?refresh=true"
         data = {"doc": {key_match[self.index_name]: False}}
-        _, _ = ElasticWrap(path).post(data)
+        _, _ = IndexClient(path).post(data)
 
     def del_in_es(self):
         """delete item from elastic search"""
         print(f"{self.youtube_id}: delete from es")
-        _, _ = ElasticWrap(self.es_path).delete(refresh=True)
+        _, _ = IndexClient(self.es_path).delete(refresh=True)
 
 
 class Pagination:

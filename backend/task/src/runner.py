@@ -9,7 +9,7 @@ import inspect
 import traceback
 from typing import Any, Callable
 
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from task.src.task_config import TASK_CONFIG
 from task.src.task_queue import TaskQueue
 
@@ -70,21 +70,21 @@ class BaseTask(PlainTask):
         print(f"{task_id} Failed callback")
         message, key = self._build_message(level="error")
         message.update({"messages": [f"Task failed: {exc}"]})
-        RedisArchivist().set_message(key, message, expire=20)
+        StateStore().set_message(key, message, expire=20)
 
     def on_success(self, retval, task_id, args, kwargs):
         """callback task completed"""
         print(f"{task_id} success callback")
         message, key = self._build_message()
         message.update({"messages": ["Task completed"]})
-        RedisArchivist().set_message(key, message, expire=5)
+        StateStore().set_message(key, message, expire=5)
 
     def before_start(self, task_id, args, kwargs):
         """callback before initiating task"""
         print(f"{self.name} create callback")
         message, key = self._build_message()
         message.update({"messages": ["New task received."]})
-        RedisArchivist().set_message(key, message)
+        StateStore().set_message(key, message)
 
     def after_return(self, status, retval, task_id, args, kwargs, einfo):
         """callback after task returns"""
@@ -109,7 +109,7 @@ class BaseTask(PlainTask):
         if title:
             message["title"] = title
 
-        RedisArchivist().set_message(key, message)
+        StateStore().set_message(key, message)
 
     def _build_message(self, level="info"):
         """build message dict"""

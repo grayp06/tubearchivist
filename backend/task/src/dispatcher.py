@@ -88,6 +88,7 @@ class Dispatcher(threading.Thread):
         self.last_schedule = 0.0
         self.last_housekeeping = time.monotonic()
         self.lock_file = None
+        self.housekeeper: threading.Thread | None = None
 
     def acquire_lock(self) -> bool:
         """make sure there is only one dispatcher for the cache folder"""
@@ -137,20 +138,33 @@ class Dispatcher(threading.Thread):
 
         self.spawn()
 
+    def housekeeping(self) -> None:
+        """run maintenance in the background, one at a time"""
+        if self.housekeeper and self.housekeeper.is_alive():
+            return
+
+        self.housekeeper = threading.Thread(
+            target=self.run_housekeeping, name="housekeeping", daemon=True
+        )
+        self.housekeeper.start()
+
     @staticmethod
-    def housekeeping() -> None:
-        """take daily index snapshot if enabled"""
+    def run_housekeeping() -> None:
+        """take daily index snapshot if enabled, check db files weekly"""
         # pylint: disable=import-outside-toplevel
         from appsettings.src.config import AppConfig
-        from appsettings.src.snapshot import ElasticSnapshot
+        from appsettings.src.snapshot import IndexSnapshot
+        from common.src.integrity import IntegrityCheck
 
         try:
             config = AppConfig().config
-        except ValueError:
-            return
+            if config["application"]["enable_snapshot"]:
+                IndexSnapshot().run_daily()
 
-        if config["application"]["enable_snapshot"]:
-            ElasticSnapshot().run_daily()
+            if IntegrityCheck().is_due():
+                IntegrityCheck().run()
+        except Exception as err:  # pylint: disable=broad-exception-caught
+            print(f"[housekeeping] error: {type(err).__name__}: {err}")
 
     def spawn(self) -> None:
         """start queued tasks while there are free slots"""

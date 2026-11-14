@@ -2,7 +2,7 @@
 
 from common.serializers import ErrorResponseSerializer
 from common.src.helper import calc_is_watched
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.src.watched import WatchState
 from common.views_base import AdminWriteOnly, ApiBaseView
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -215,7 +215,7 @@ class VideoProgressView(ApiBaseView):
 
         position = validated_data["position"]
         key = self._get_key(request.user.id, video_id)
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         current_progress = (
             redis_con.get_message_dict(key) or self.response["player"]
         )
@@ -256,7 +256,7 @@ class VideoProgressView(ApiBaseView):
     def delete(self, request, video_id):
         """delete progress position"""
         key = self._get_key(request.user.id, video_id)
-        RedisArchivist().del_message(key)
+        StateStore().del_message(key)
 
         return Response(status=204)
 

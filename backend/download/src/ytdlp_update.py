@@ -12,11 +12,12 @@ from datetime import datetime
 
 import requests
 from common.src.env_settings import EnvironmentSettings
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.src.ytdlp_path import (
     PACKAGE,
     get_active_version,
     get_bundled_version,
+    get_previous_dir,
     get_update_dir,
     get_updated_version,
     parse_version,
@@ -30,11 +31,15 @@ class YtDlpUpdate:
     STATUS_KEY = "ytdlp:update"
     CHANNELS = ["release", "nightly"]
     TIMEOUT = 600
+    # companion package solving youtube js challenges, ships with yt-dlp
+    COMPANIONS = ["yt-dlp-ejs"]
+    CANARY_ID = "jNQXAC9IVRw"
 
     def __init__(self, task=None):
         self.task = task
         self.channel = EnvironmentSettings.YTDLP_UPDATE_CHANNEL
         self.update_dir = get_update_dir()
+        self.previous_dir = get_previous_dir()
 
     @property
     def is_enabled(self) -> bool:
@@ -79,12 +84,13 @@ class YtDlpUpdate:
         return data["info"]["version"]
 
     def install(self, version: str) -> str:
-        """install version next to the bundled one, returns new version"""
+        """
+        install version next to the bundled one, returns new version
+        only yt-dlp itself and its companions are installed, all other
+        dependencies stay the ones shipped with the application
+        """
         staging = f"{self.update_dir}.new"
-        retired = f"{self.update_dir}.old"
-        for folder in (staging, retired):
-            shutil.rmtree(folder, ignore_errors=True)
-
+        shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(os.path.dirname(self.update_dir), exist_ok=True)
         command = [
             sys.executable,
@@ -94,9 +100,11 @@ class YtDlpUpdate:
             "--quiet",
             "--disable-pip-version-check",
             "--no-cache-dir",
+            "--no-deps",
             "--target",
             staging,
-            f"{PACKAGE}[default]=={version}",
+            f"{PACKAGE}=={version}",
+            *self.COMPANIONS,
         ]
         if self.channel == "nightly":
             command.append("--pre")
@@ -104,26 +112,48 @@ class YtDlpUpdate:
         try:
             self._run(command)
             installed = self._validate(staging)
+            self._canary(staging)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
-        # swap folders, running tasks keep using what they loaded
-        if os.path.exists(self.update_dir):
-            os.rename(self.update_dir, retired)
-
-        os.rename(staging, self.update_dir)
-        shutil.rmtree(retired, ignore_errors=True)
+        self._swap(staging)
 
         return installed
 
-    def _run(self, command: list[str], env: dict | None = None) -> str:
+    def _swap(self, staging: str) -> None:
+        """activate staging folder, keep the replaced one for rollback"""
+        shutil.rmtree(self.previous_dir, ignore_errors=True)
+        if os.path.exists(self.update_dir):
+            os.rename(self.update_dir, self.previous_dir)
+
+        os.rename(staging, self.update_dir)
+
+    def rollback(self) -> str | None:
+        """go back to the previous version, returns version in use after"""
+        if not os.path.isdir(self.previous_dir):
+            shutil.rmtree(self.update_dir, ignore_errors=True)
+            return None
+
+        broken = f"{self.update_dir}.broken"
+        shutil.rmtree(broken, ignore_errors=True)
+        if os.path.exists(self.update_dir):
+            os.rename(self.update_dir, broken)
+
+        os.rename(self.previous_dir, self.update_dir)
+        shutil.rmtree(broken, ignore_errors=True)
+
+        return get_updated_version()
+
+    def _run(
+        self, command: list[str], env: dict | None = None, timeout: int = 0
+    ) -> str:
         """run command, raise with output on error"""
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            timeout=self.TIMEOUT,
+            timeout=timeout or self.TIMEOUT,
             env=env,
             check=False,
         )
@@ -141,6 +171,50 @@ class YtDlpUpdate:
 
         return self._run([sys.executable, "-c", code], env=env)
 
+    def _canary_code(self) -> str:
+        """python snippet extracting the canary video"""
+        return (
+            "import yt_dlp;"
+            + "yt_dlp.YoutubeDL({'quiet': True, 'socket_timeout': 20, "
+            + "'extractor_retries': 1}).extract_info("
+            + f"'https://www.youtube.com/watch?v={self.CANARY_ID}', "
+            + "download=False)"
+        )
+
+    def _canary(self, folder: str) -> None:
+        """
+        extract a stable video with the new version, to catch releases
+        that import fine but can't extract anymore
+        An error that the current version has as well is not a regression.
+        """
+        code = self._canary_code()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = folder
+        try:
+            self._run([sys.executable, "-c", code], env=env, timeout=90)
+        except ValueError as err:
+            if self._canary_fails_for_current():
+                print(f"[yt-dlp] canary failed for both versions: {err}")
+                return
+
+            raise ValueError(f"new yt-dlp failed the canary: {err}") from err
+        except subprocess.TimeoutExpired:
+            print("[yt-dlp] canary timed out, continue")
+
+    def _canary_fails_for_current(self) -> bool:
+        """check if the version in use fails the canary too"""
+        code = self._canary_code()
+        env = os.environ.copy()
+        if os.path.isdir(self.update_dir):
+            env["PYTHONPATH"] = self.update_dir
+
+        try:
+            self._run([sys.executable, "-c", code], env=env, timeout=90)
+        except (ValueError, subprocess.TimeoutExpired):
+            return True
+
+        return False
+
     def remove_outdated(self) -> str | None:
         """
         remove updated version if the bundled one caught up,
@@ -157,6 +231,7 @@ class YtDlpUpdate:
             return None
 
         shutil.rmtree(self.update_dir, ignore_errors=True)
+        shutil.rmtree(self.previous_dir, ignore_errors=True)
 
         return updated or "unknown"
 
@@ -169,11 +244,11 @@ class YtDlpUpdate:
             "updated": updated,
             "checked": int(datetime.now().timestamp()),
         }
-        RedisArchivist().set_message(self.STATUS_KEY, message)
+        StateStore().set_message(self.STATUS_KEY, message)
 
     def get_status(self) -> dict:
         """get current version and last check"""
-        status = RedisArchivist().get_message_dict(self.STATUS_KEY)
+        status = StateStore().get_message_dict(self.STATUS_KEY)
         status.update(
             {
                 "version": get_active_version(),

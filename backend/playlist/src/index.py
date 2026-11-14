@@ -7,7 +7,7 @@ functionality:
 from datetime import datetime
 
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.index_generic import YouTubeItem
 from download.src.thumbnails import ThumbManager
 from video.src import index as ta_video
@@ -177,7 +177,7 @@ class YoutubePlaylist(YouTubeItem):
             "query": {"terms": {"youtube_id": video_ids}},
             "script": self._add_playlist_id,
         }
-        ElasticWrap("ta_video/_update_by_query").post(data)
+        IndexClient("ta_video/_update_by_query").post(data)
 
     def remove_vids_from_playlist(self):
         """remove playlist ids from videos if needed"""
@@ -193,7 +193,7 @@ class YoutubePlaylist(YouTubeItem):
             "query": {"terms": {"youtube_id": to_remove}},
             "script": self._remove_playlist_id,
         }
-        response, _ = ElasticWrap("ta_video/_update_by_query").post(data)
+        response, _ = IndexClient("ta_video/_update_by_query").post(data)
         removed = response.get("updated")
         print(f"{self.youtube_id}: removed {removed} videos from playlist")
 
@@ -299,7 +299,7 @@ class YoutubePlaylist(YouTubeItem):
             },
             "script": self._remove_playlist_id,
         }
-        _, _ = ElasticWrap("ta_video/_update_by_query").post(data)
+        _, _ = IndexClient("ta_video/_update_by_query").post(data)
         self.del_in_es()
 
     def is_custom_playlist(self):

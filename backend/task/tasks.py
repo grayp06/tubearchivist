@@ -6,10 +6,10 @@ Functionality:
 - handle task locking
 """
 
-from appsettings.src.backup import ElasticBackup
+from appsettings.src.backup import IndexBackup
 from appsettings.src.config import ReleaseVersion
 from appsettings.src.filesystem import Scanner
-from appsettings.src.index_setup import ElasticIndexWrap
+from appsettings.src.index_setup import IndexSetup
 from appsettings.src.manual import ImportFolderScanner
 from appsettings.src.reindex import Reindex, ReindexManual, ReindexPopulate
 from channel.src.index import YoutubeChannel
@@ -171,7 +171,7 @@ def run_backup(self, reason="auto"):
         return
 
     manager.init(self)
-    ElasticBackup(reason=reason, task=self).backup_all_indexes()
+    IndexBackup(reason=reason, task=self).backup_all_indexes()
 
 
 @shared_task(bind=True, name="restore_backup", base=BaseTask)
@@ -185,8 +185,8 @@ def run_restore_backup(self, filename):
 
     manager.init(self)
     self.send_progress(["Reset your Index"])
-    ElasticIndexWrap().reset()
-    ElasticBackup(task=self).restore(filename)
+    IndexSetup().reset()
+    IndexBackup(task=self).restore(filename)
     print("index restore finished")
 
     return f"backup restore completed: {filename}"

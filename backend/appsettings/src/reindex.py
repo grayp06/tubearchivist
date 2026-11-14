@@ -13,9 +13,9 @@ from appsettings.src.config import AppConfig
 from channel.src.index import YoutubeChannel
 from channel.src.remote_query import get_last_channel_videos
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import rand_sleep
-from common.src.ta_redis import RedisQueue
+from common.src.index_client import IndexClient, IndexPaginate
+from common.src.state_store import StateQueue
 from download.src.thumbnails import ThumbManager
 from download.src.yt_dlp_base import CookieHandler
 from playlist.src.index import YoutubePlaylist
@@ -69,7 +69,7 @@ class ReindexBase:
         if not all_ids:
             return
 
-        RedisQueue(queue_name=reindex_config["queue_name"]).add_list(all_ids)
+        StateQueue(queue_name=reindex_config["queue_name"]).add_list(all_ids)
 
 
 class ReindexPopulate(ReindexBase):
@@ -104,7 +104,7 @@ class ReindexPopulate(ReindexBase):
             "query": {"bool": {"must": must_list}},
             "sort": [{"published": {"order": "desc"}}],
         }
-        response, _ = ElasticWrap("ta_video/_search").get(data=data)
+        response, _ = IndexClient("ta_video/_search").get(data=data)
         hits = response["hits"]["hits"]
         if not hits:
             return
@@ -159,7 +159,7 @@ class ReindexPopulate(ReindexBase):
             "sort": [{refresh_key: {"order": "asc"}}],
             "_source": False,
         }
-        response, _ = ElasticWrap(f"{index_name}/_search").get(data=data)
+        response, _ = IndexClient(f"{index_name}/_search").get(data=data)
 
         all_ids = [i["_id"] for i in response["hits"]["hits"]]
         return all_ids
@@ -210,12 +210,12 @@ class ReindexManual(ReindexBase):
             return
 
         queue_name = self.REINDEX_CONFIG["video"]["queue_name"]
-        RedisQueue(queue_name).add_list(values)
+        StateQueue(queue_name).add_list(values)
 
     def _add_channels(self, values: list[str]) -> None:
         """add list of channels to reindex queue"""
         queue_name = self.REINDEX_CONFIG["channel"]["queue_name"]
-        RedisQueue(queue_name).add_list(values)
+        StateQueue(queue_name).add_list(values)
 
         if self.extract_videos:
             for channel_id in values:
@@ -225,7 +225,7 @@ class ReindexManual(ReindexBase):
     def _add_playlists(self, values: list[str]) -> None:
         """add list of playlists to reindex queue"""
         queue_name = self.REINDEX_CONFIG["playlist"]["queue_name"]
-        RedisQueue(queue_name).add_list(values)
+        StateQueue(queue_name).add_list(values)
 
         if self.extract_videos:
             for playlist_id in values:
@@ -270,14 +270,14 @@ class Reindex(ReindexBase):
             return
 
         for name, index_config in self.REINDEX_CONFIG.items():
-            if not RedisQueue(index_config["queue_name"]).length():
+            if not StateQueue(index_config["queue_name"]).length():
                 continue
 
             self.reindex_type(name, index_config)
 
     def reindex_type(self, name: str, index_config: ReindexConfigType) -> None:
         """reindex all of a single index"""
-        queue = RedisQueue(index_config["queue_name"])
+        queue = StateQueue(index_config["queue_name"])
         while True:
             total = queue.max_score()
             youtube_id, idx = queue.get_next()
@@ -479,9 +479,9 @@ class ReindexProgress(ReindexBase):
         if queue_name == "all":
             queues = [i["queue_name"] for i in self.REINDEX_CONFIG.values()]
             for queue in queues:
-                total += len(RedisQueue(queue).get_all())
+                total += len(StateQueue(queue).get_all())
         else:
-            total += len(RedisQueue(queue_name).get_all())
+            total += len(StateQueue(queue_name).get_all())
 
         return total
 
@@ -489,7 +489,7 @@ class ReindexProgress(ReindexBase):
         """get state based on request_id"""
         state_dict = {}
         if self.request_id:
-            state = RedisQueue(queue_name).in_queue(self.request_id)
+            state = StateQueue(queue_name).in_queue(self.request_id)
             state_dict.update({"id": self.request_id, "state": state})
 
             return state_dict
@@ -566,4 +566,4 @@ class ChannelFullScan:
         # add last newline
         bulk_list.append("\n")
         data = "\n".join(bulk_list)
-        _, _ = ElasticWrap("_bulk").post(data=data, ndjson=True)
+        _, _ = IndexClient("_bulk").post(data=data, ndjson=True)

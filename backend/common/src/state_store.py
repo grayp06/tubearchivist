@@ -3,9 +3,6 @@ functionality:
 - key value store with expiry, backed by sqlite
 - hold temporary queues in sqlite
 - store task state and results
-
-The class names are kept from the redis based implementation
-so the rest of the application doesn't need to care.
 """
 
 import json
@@ -43,14 +40,14 @@ CREATE INDEX IF NOT EXISTS task_state ON task (state, created);
 """
 
 
-class RedisBase:
+class StateBase:
     """connection base for the state store"""
 
     def __init__(self):
         self.conn = get_conn(STATE_DB, schema=SCHEMA)
 
 
-class RedisArchivist(RedisBase):
+class StateStore(StateBase):
     """collection of methods to interact with key value store"""
 
     CHANNELS: list[str] = [
@@ -141,7 +138,7 @@ class RedisArchivist(RedisBase):
         )
 
 
-class RedisQueue(RedisBase):
+class StateQueue(StateBase):
     """
     dynamically interact with queues, ordered by score
     - low score number is first in queue
@@ -255,7 +252,7 @@ class RedisQueue(RedisBase):
         self.conn.execute("DELETE FROM queue WHERE name = ?", (self.key,))
 
 
-class TaskRedis(RedisBase):
+class TaskStore(StateBase):
     """interact with stored tasks
 
     state is the lifecycle of the task in the runner:

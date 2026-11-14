@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
-from common.src.es_connect import IndexPaginate
+from common.src.index_client import IndexPaginate
 
 
 def ignore_filelist(filelist: list[str]) -> list[str]:

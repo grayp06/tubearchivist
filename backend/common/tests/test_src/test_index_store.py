@@ -6,7 +6,7 @@ import json
 
 import pytest
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.index_query import edit_distance, parse_date
 from common.src.index_schema import all_indexes
 from common.src.index_store import IndexStore
@@ -71,18 +71,18 @@ def search_ids(store, body, index="ta_video"):
 def test_get_index_delete(store):
     """single document lifecycle through path interface"""
     path = "ta_video/_doc/video000000"
-    response, status = ElasticWrap(path).get()
+    response, status = IndexClient(path).get()
     assert status == 200
     assert response["_source"]["title"] == TITLES[0]
 
-    _, status = ElasticWrap(path).put(build_video(0), refresh=True)
+    _, status = IndexClient(path).put(build_video(0), refresh=True)
     assert status == 200
-    _, status = ElasticWrap(f"{path}?refresh=true").delete()
+    _, status = IndexClient(f"{path}?refresh=true").delete()
     assert status == 200
-    response, status = ElasticWrap(path).get(print_error=False)
+    response, status = IndexClient(path).get(print_error=False)
     assert status == 404
     assert "_source" not in response
-    assert ElasticWrap("ta_video/_count").get()[0]["count"] == 5
+    assert IndexClient("ta_video/_count").get()[0]["count"] == 5
 
 
 def test_term_and_match(store):
@@ -211,7 +211,7 @@ def test_multi_index_search(store):
         }
     }
     path = "ta_video,ta_channel,ta_playlist/_search"
-    response, _ = ElasticWrap(path).get({"query": query, "size": 30})
+    response, _ = IndexClient(path).get({"query": query, "size": 30})
     indexes = {i["_index"] for i in response["hits"]["hits"]}
     assert indexes == {"ta_video", "ta_channel"}
     assert response["hits"]["total"]["value"] == 3
@@ -319,15 +319,15 @@ def test_updates(store):
     """partial updates, scripts and upserts"""
     path = "ta_video/_update/video000001"
     data = {"doc": {"player": {"watched": True, "watched_date": 5}}}
-    _, status = ElasticWrap(path).post(data)
+    _, status = IndexClient(path).post(data)
     assert status == 200
     player = store.get_doc("ta_video", "video000001")["player"]
     assert player == {"watched": True, "duration": 61, "watched_date": 5}
 
-    _, status = ElasticWrap("ta_video/_update/missing").post(data)
+    _, status = IndexClient("ta_video/_update/missing").post(data)
     assert status == 404
     data = {"script": lambda source: False, "upsert": {"task": ["url"]}}
-    _, status = ElasticWrap("ta_config/_update/notify").post(data)
+    _, status = IndexClient("ta_config/_update/notify").post(data)
     assert status == 201
     assert store.get_doc("ta_config", "notify") == {"task": ["url"]}
 
@@ -338,12 +338,12 @@ def test_updates(store):
         "query": {"term": {"playlist.keyword": {"value": "PL1"}}},
         "script": remove_playlist,
     }
-    response, _ = ElasticWrap("ta_video/_update_by_query").post(data)
+    response, _ = IndexClient("ta_video/_update_by_query").post(data)
     assert response["updated"] == 3
     assert not search_ids(store, {"query": data["query"]})
 
     data = {"query": {"term": {"vid_type": {"value": "shorts"}}}}
-    response, _ = ElasticWrap("ta_video/_delete_by_query").post(data)
+    response, _ = IndexClient("ta_video/_delete_by_query").post(data)
     assert response["deleted"] == 1
     assert store.count("ta_video") == 5
     # full text index follows updates and deletes
@@ -366,7 +366,7 @@ def test_bulk_and_paginate(store):
         [json.dumps(update), json.dumps({"doc": {"status": "ignore"}})]
     )
     lines.append("\n")
-    response, status = ElasticWrap("_bulk").post("\n".join(lines), ndjson=True)
+    response, status = IndexClient("_bulk").post("\n".join(lines), ndjson=True)
     assert status == 200 and not response["errors"]
 
     data = {

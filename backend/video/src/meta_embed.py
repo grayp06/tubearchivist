@@ -12,7 +12,7 @@ from appsettings.src.config import AppConfig, AppConfigType
 from channel.serializers import ChannelSerializer
 from channel.src.index import YoutubeChannel
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
+from common.src.index_client import IndexClient, IndexPaginate
 from download.src.thumbnails import ThumbManager
 from mutagen.mp4 import MP4, MP4FreeForm
 from playlist.serializers import PlaylistSerializer
@@ -55,7 +55,7 @@ class MetadataEmbed:
     def _get_total(self):
         """get total documents in index"""
         path = f"{self.INDEX_NAME}/_count"
-        response, _ = ElasticWrap(path).get()
+        response, _ = IndexClient(path).get()
 
         return response.get("count")
 

@@ -6,7 +6,7 @@ Functionality:
 - calculate pagination values
 """
 
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 from common.src.search_processor import SearchProcess
 
 
@@ -16,7 +16,7 @@ class SearchForm:
     def multi_search(self, search_query):
         """searching through index"""
         path, query, query_type = SearchParser(search_query).run()
-        response, _ = ElasticWrap(path).get(data=query)
+        response, _ = IndexClient(path).get(data=query)
         search_results = SearchProcess(response).process()
         all_results = self.build_results(search_results)
 

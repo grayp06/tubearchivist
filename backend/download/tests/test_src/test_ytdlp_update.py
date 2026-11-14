@@ -86,3 +86,64 @@ def test_remove_outdated(updater, monkeypatch):
     assert updater.remove_outdated() == "2026.8.1"
     assert not os.path.exists(updater.update_dir)
     assert ytdlp_path.activate_update() is False
+
+
+def test_swap_keeps_previous(updater):
+    """replaced version is kept for a rollback"""
+    for folder, marker in ((updater.update_dir, "old"), ("new", "new")):
+        target = folder if folder != "new" else f"{updater.update_dir}.new"
+        os.makedirs(os.path.join(target, "yt_dlp"))
+        with open(os.path.join(target, "marker"), "w", encoding="utf-8") as f:
+            f.write(marker)
+
+    updater._swap(f"{updater.update_dir}.new")  # pylint: disable=W0212
+    with open(
+        os.path.join(updater.update_dir, "marker"), encoding="utf-8"
+    ) as f:
+        assert f.read() == "new"
+    with open(
+        os.path.join(updater.previous_dir, "marker"), encoding="utf-8"
+    ) as f:
+        assert f.read() == "old"
+
+
+def test_rollback(updater, monkeypatch):
+    """go back to the previous version"""
+    monkeypatch.setattr(ytdlp_update, "get_updated_version", lambda: "old")
+    os.makedirs(updater.update_dir)
+    os.makedirs(updater.previous_dir)
+    with open(os.path.join(updater.previous_dir, "marker"), "w") as f:
+        f.write("old")
+
+    assert updater.rollback() == "old"
+    assert os.path.exists(os.path.join(updater.update_dir, "marker"))
+    assert not os.path.exists(updater.previous_dir)
+
+
+def test_rollback_without_previous(updater):
+    """fall back to the bundled version if there is no previous one"""
+    os.makedirs(updater.update_dir)
+    assert updater.rollback() is None
+    assert not os.path.exists(updater.update_dir)
+
+
+def test_canary_regression(updater, monkeypatch):
+    """a version failing where the current one works is rejected"""
+    calls = []
+
+    def fake_run(command, env=None, timeout=0):
+        calls.append(env.get("PYTHONPATH") if env else None)
+        if env and env.get("PYTHONPATH") == "new":
+            raise ValueError("broken")
+
+        return ""
+
+    monkeypatch.setattr(updater, "_run", fake_run)
+    with pytest.raises(ValueError, match="canary"):
+        updater._canary("new")  # pylint: disable=W0212
+
+    # current version fails too, so not a regression
+    monkeypatch.setattr(
+        updater, "_run", lambda *a, **k: (_ for _ in ()).throw(ValueError("x"))
+    )
+    updater._canary("new")  # pylint: disable=W0212

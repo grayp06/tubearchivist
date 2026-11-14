@@ -80,6 +80,7 @@ Take a look at the example [docker-compose.yml](docker-compose.yml) and configur
 | TA_LDAP                       | Configure TA to use LDAP Authentication | [Read more](https://docs.tubearchivist.com/configuration/ldap/) |
 | DISABLE_STATIC_AUTH           | Remove authentication from media files, (Google Cast...) | [Read more](https://docs.tubearchivist.com/installation/env-vars/#disable_static_auth) |
 | TA_AUTO_UPDATE_YTDLP          | Channel for automatic yt-dlp updates: `release` (default), `nightly` or `off` | Optional |
+| TA_ALLOW_NETWORK_FS           | Set to `true` to start with the cache volume on a network file system, not recommended | Optional |
 | TA_TASK_CONCURRENCY           | How many background tasks can run at the same time (Default: 2) | Optional |
 | TA_WEB_THREADS                | Threads of the web server (Default: 4) | Optional |
 | TA_DB_CACHE_KB                | SQLite page cache per connection in KiB (Default: 2048) | Optional |
@@ -105,11 +106,13 @@ Everything except your media files is stored in the cache volume:
 | `index.sqlite3` | All metadata: videos, channels, playlists, download queue, subtitles, comments and settings |
 | `db.sqlite3` | User accounts, sessions and schedules |
 | `state.sqlite3` | Task queue, task results, notifications and other temporary state |
-| `snapshot/` | Daily snapshots of the index, kept for 7 days |
+| `snapshot/` | Daily compressed snapshots of the index, kept for 14 days |
 | `backup/` | Zip file backups |
-| `ytdlp/packages/` | yt-dlp versions installed by the automatic update |
+| `ytdlp/` | yt-dlp version installed by the automatic update and the one before it |
 
-Keep the cache volume on local storage, SQLite does not work reliably on network file systems like NFS or SMB.
+Keep the cache volume on local storage, SQLite does not work reliably on network file systems like NFS or SMB. The container refuses to start if it detects one for the cache volume, the media volume can be on the network.
+
+All database files are checked for damage once a week. If a problem is found, you will see a notification on the settings pages and a message in the log: restore a snapshot or a backup and check your storage.
 
 ### Automatic yt-dlp updates
 
@@ -118,6 +121,9 @@ YouTube changes frequently and **yt-dlp** needs to keep up. Tube Archivist looks
 * The schedule gets created on first start and a first check runs right away. If the container was off at the scheduled time, the check runs after the next start.
 * New versions are installed to the cache volume, so they survive container updates. Once the image ships the same or a newer version, the downloaded copy is removed.
 * Tasks are started as new processes, the next download or rescan uses the new version without a restart.
+* Only yt-dlp and its JavaScript challenge solver are replaced, the other Python packages of the image are not touched.
+* Before a new version is used, it has to load and pass a test extraction. If it does not while the current version does, the update is discarded. The previous version is kept on disk as fallback.
+* The *Scheduling* settings page shows the version in use, the last check and its result, the *Check now* button starts a check right away. The same information is available from `GET /api/appsettings/ytdlp/`.
 * Change the time or remove the schedule on the *Scheduling* settings page under *yt-dlp Update*. To trigger a check through the API, send a `POST` request to `/api/task/by-name/update_ytdlp/`.
 * Set `TA_AUTO_UPDATE_YTDLP` to `nightly` to follow the yt-dlp nightly builds or to `off` to stay on the version of the image.
 
@@ -130,12 +136,21 @@ YouTube changes frequently and **yt-dlp** needs to keep up. Tube Archivist looks
 
 Elasticsearch snapshots can not be restored, use the zip file backup.
 
+As alternative to the backup file, you can copy all documents directly from Elasticsearch. Keep the Elasticsearch container running and reachable from the new container, start the new container and run:
+
+```bash
+docker exec -it tubearchivist python manage.py ta_import_elasticsearch \
+    --url http://archivist-es:9200 --password your-elastic-password --replace
+```
+
+Restart the container once the import is done, you can remove Elasticsearch after that.
+
 ### Differences to the original stack
 
 The interface and the API are the same. Things to be aware of:
 
 * Search uses SQLite FTS5 instead of Elasticsearch. Stemming, prefix search while typing, fuzzy matching and highlighting work, the ranking and the fuzzy matches can differ from what Elasticsearch returns.
-* Snapshots are complete copies of the index database instead of incremental snapshots. To limit disk usage, they are kept for 7 days.
+* Snapshots are complete, compressed copies of the index database instead of incremental snapshots. To limit disk usage, they are kept for 14 days.
 * Result lists are not limited to 10000 items.
 
 ## Update
@@ -177,6 +192,10 @@ The container stops at startup if it can not write to the cache volume. Make sur
 ### `database is locked`
 
 SQLite needs working file locks. If you see this error, your cache volume is most likely on a network file system, move it to local storage.
+
+### Cache folder is on a network filesystem
+
+The storage check at startup found the cache volume on NFS, SMB or a similar file system. File locking is not reliable there and that can damage the database. Move the cache volume to a local disk. If you are sure that locking works on your setup, set `TA_ALLOW_NETWORK_FS=true` to start anyway.
 
 ### Disk usage
 

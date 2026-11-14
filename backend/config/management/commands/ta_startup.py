@@ -11,14 +11,14 @@ from time import sleep
 from typing import Callable
 
 from appsettings.src.config import AppConfig, ReleaseVersion
-from appsettings.src.index_setup import ElasticIndexWrap
-from appsettings.src.snapshot import ElasticSnapshot
+from appsettings.src.index_setup import IndexSetup
+from appsettings.src.snapshot import IndexSnapshot
 from channel.src.index import YoutubeChannel
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import clear_dl_cache
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.index_store import IndexStore
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import dateformat
@@ -132,7 +132,7 @@ class Command(BaseCommand):
             "reindex:ta_playlist",
         ]
 
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         has_changed = False
         for key in all_keys:
             if redis_con.del_message(key):
@@ -148,7 +148,7 @@ class Command(BaseCommand):
         """clear tasks and messages"""
         self.stdout.write("[3] clear task leftovers")
         TaskManager().fail_pending()
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         to_delete = redis_con.list_keys("message:")
         if to_delete:
             for key in to_delete:
@@ -191,12 +191,12 @@ class Command(BaseCommand):
     def _index_setup(self):
         """migration: validate index mappings"""
         self.stdout.write("[6] validate index mappings")
-        ElasticIndexWrap().setup()
+        IndexSetup().setup()
 
     def _snapshot_check(self):
         """prepare snapshot folder, snapshots are taken by the dispatcher"""
         self.stdout.write("[7] setup snapshots")
-        os.makedirs(ElasticSnapshot.SNAPSHOT_DIR, exist_ok=True)
+        os.makedirs(IndexSnapshot.SNAPSHOT_DIR, exist_ok=True)
         IndexStore().optimize()
         self.stdout.write(self.style.SUCCESS("    ✓ snapshot folder ready"))
 
@@ -278,7 +278,7 @@ class Command(BaseCommand):
 
         # only once, to respect a schedule removed by the user later
         init_key = "ytdlp:schedule_init"
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         if redis_con.get_message_str(init_key):
             self.stdout.write(
                 self.style.SUCCESS("    schedule init already done")
@@ -303,7 +303,7 @@ class Command(BaseCommand):
     def _init_app_config(self) -> None:
         """init default app config"""
         self.stdout.write("[9] Check AppConfig")
-        response, status_code = ElasticWrap("ta_config/_doc/appsettings").get()
+        response, status_code = IndexClient("ta_config/_doc/appsettings").get()
         if status_code in [200, 201]:
             self.stdout.write(
                 self.style.SUCCESS("    skip completed appsettings init")
@@ -342,9 +342,7 @@ class Command(BaseCommand):
         """set startup time to trigger frontend refresh, threadsafe"""
         self.stdout.write("[10] Set startup timestamp")
         message = str(int(datetime.now().timestamp() // 10 * 10))
-        RedisArchivist().set_message(
-            "STARTTIMESTAMP", message=message, save=True
-        )
+        StateStore().set_message("STARTTIMESTAMP", message=message, save=True)
         self.stdout.write(
             self.style.SUCCESS(f"    ✓ set timestamp to {message}.")
         )
@@ -510,7 +508,7 @@ class Command(BaseCommand):
         self.stdout.write(f"[MIGRATION] run {desc}")
         path = f"{index_name}/_update_by_query?wait_for_completion=true"
         data = {"query": query, "script": script}
-        response, status_code = ElasticWrap(path).post(data)
+        response, status_code = IndexClient(path).post(data)
         if status_code in [200, 201]:
             updated = response.get("updated")
             if updated:
@@ -518,7 +516,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS(suc_msg))
 
                 # ensure index consistency
-                ElasticWrap(f"{index_name}/_refresh").post()
+                IndexClient(f"{index_name}/_refresh").post()
             else:
                 noop_msg = f"    no items in {index_name} need updating"
                 self.stdout.write(self.style.SUCCESS(noop_msg))

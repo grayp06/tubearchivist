@@ -12,12 +12,12 @@ import zipfile
 from datetime import datetime
 
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import get_mapping, ignore_filelist
+from common.src.index_client import IndexClient, IndexPaginate
 from task.models import CustomPeriodicTask
 
 
-class ElasticBackup:
+class IndexBackup:
     """dump index to nd-json files for later bulk import"""
 
     INDEX_SIZE_CONF = {
@@ -37,7 +37,7 @@ class ElasticBackup:
         """backup all indexes, add reason to init"""
         print("backup all indexes")
         if not self.reason:
-            raise ValueError("missing backup reason in ElasticBackup")
+            raise ValueError("missing backup reason in IndexBackup")
 
         if self.task:
             self.task.send_progress(["Scanning your index."])
@@ -77,7 +77,7 @@ class ElasticBackup:
     def _get_total(index_name):
         """get total documents in index"""
         path = f"ta_{index_name}/_count"
-        response, _ = ElasticWrap(path).get()
+        response, _ = IndexClient(path).get()
 
         return response.get("count")
 
@@ -109,7 +109,7 @@ class ElasticBackup:
         if not data.strip():
             return
 
-        _, _ = ElasticWrap("_bulk").post(data=data, ndjson=True)
+        _, _ = IndexClient("_bulk").post(data=data, ndjson=True)
 
     def get_all_backup_files(self):
         """build all available backup files for view"""
@@ -157,7 +157,7 @@ class ElasticBackup:
     def restore(self, filename):
         """
         restore from backup zip file
-        call reset from ElasticIndexWrap first to start blank
+        call reset from IndexSetup first to start blank
         """
         zip_content = self._unpack_zip_backup(filename)
         zip_content.sort()
@@ -196,7 +196,7 @@ class ElasticBackup:
     @staticmethod
     def index_exists(index_name):
         """check if index already exists to skip"""
-        _, status_code = ElasticWrap(f"ta_{index_name}").get()
+        _, status_code = IndexClient(f"ta_{index_name}").get()
         exists = status_code == 200
 
         return exists

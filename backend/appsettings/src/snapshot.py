@@ -4,7 +4,9 @@ functionality:
 - a snapshot is a consistent copy of the index database file
 """
 
+import gzip
 import os
+import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,14 +17,16 @@ from common.src.index_store import IndexStore
 from common.src.sqlite_conn import write_tx
 
 
-class ElasticSnapshot:
+class IndexSnapshot:
     """interact with snapshots of the index"""
 
     POLICY = "ta_daily"
     SNAPSHOT_DIR = os.path.join(EnvironmentSettings.CACHE_DIR, "snapshot")
-    EXPIRE_DAYS = 7
+    EXPIRE_DAYS = 14
     MIN_COUNT = 3
-    MAX_COUNT = 14
+    MAX_COUNT = 30
+    EXTENSIONS = (".sqlite3.gz", ".sqlite3")
+    COPY_BUFFER = 1024 * 1024
     DAILY_HOUR = 12
     STAMP_FORMAT = "%Y%m%d-%H%M%S"
 
@@ -71,7 +75,16 @@ class ElasticSnapshot:
         if not snapshot_id.startswith(f"{self.POLICY}_"):
             return None
 
-        return os.path.join(self.SNAPSHOT_DIR, f"{snapshot_id}.sqlite3")
+        for extension in self.EXTENSIONS:
+            file_path = os.path.join(
+                self.SNAPSHOT_DIR, f"{snapshot_id}{extension}"
+            )
+            if os.path.exists(file_path):
+                return file_path
+
+        return os.path.join(
+            self.SNAPSHOT_DIR, f"{snapshot_id}{self.EXTENSIONS[0]}"
+        )
 
     def take_snapshot_now(self, wait=False):
         """create snapshot now"""
@@ -83,11 +96,23 @@ class ElasticSnapshot:
         if os.path.exists(file_path):
             return {"snapshot_name": snapshot_name}
 
+        raw_path = f"{file_path}.raw"
         temp_path = f"{file_path}.partial"
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        for leftover in (raw_path, temp_path):
+            if os.path.exists(leftover):
+                os.remove(leftover)
 
-        IndexStore().snapshot_to(temp_path)
+        try:
+            IndexStore().snapshot_to(raw_path)
+            with open(raw_path, "rb") as source:
+                with gzip.open(temp_path, "wb", compresslevel=6) as target:
+                    shutil.copyfileobj(source, target, self.COPY_BUFFER)
+                    target.flush()
+                    os.fsync(target.fileno())
+        finally:
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
+
         os.rename(temp_path, file_path)
         print(f"snapshot: created {snapshot_name}")
 
@@ -127,8 +152,8 @@ class ElasticSnapshot:
 
         snap_dicts = []
         for file_name in os.listdir(self.SNAPSHOT_DIR):
-            snapshot_id, ext = os.path.splitext(file_name)
-            if ext != ".sqlite3" or not self._path(snapshot_id):
+            snapshot_id = self._snapshot_id(file_name)
+            if not snapshot_id or not self._path(snapshot_id):
                 continue
 
             file_path = os.path.join(self.SNAPSHOT_DIR, file_name)
@@ -145,6 +170,14 @@ class ElasticSnapshot:
         snap_dicts.sort(key=lambda i: i["id"], reverse=True)
 
         return snap_dicts
+
+    def _snapshot_id(self, file_name: str) -> str | None:
+        """extract snapshot id from file name"""
+        for extension in self.EXTENSIONS:
+            if file_name.endswith(extension):
+                return file_name[: -len(extension)]
+
+        return None
 
     def _parse_single_snapshot(self, snapshot_id, file_path):
         """build metadata of single snapshot"""
@@ -163,6 +196,7 @@ class ElasticSnapshot:
             "end_date": ended.strftime("%Y-%m-%d %H:%M"),
             "end_stamp": end_stamp,
             "duration_s": max(end_stamp - int(started.timestamp()), 0),
+            "size": os.path.getsize(file_path),
         }
 
     def _build_policy_details(self):
@@ -190,15 +224,27 @@ class ElasticSnapshot:
             print(f"snapshot: failed to restore, not found {snapshot_name}")
             return False
 
+        restore_path = file_path
+        is_compressed = file_path.endswith(".gz")
+        if is_compressed:
+            restore_path = os.path.join(self.SNAPSHOT_DIR, "restore.tmp")
+            with gzip.open(file_path, "rb") as source:
+                with open(restore_path, "wb") as target:
+                    shutil.copyfileobj(source, target, self.COPY_BUFFER)
+
         store = IndexStore()
         conn = store.conn
-        conn.execute("ATTACH DATABASE ? AS snapshot", (file_path,))
         try:
-            with write_tx(conn):
-                for index in self.all_indices:
-                    self._restore_index(store, index)
+            conn.execute("ATTACH DATABASE ? AS snapshot", (restore_path,))
+            try:
+                with write_tx(conn):
+                    for index in self.all_indices:
+                        self._restore_index(store, index)
+            finally:
+                conn.execute("DETACH DATABASE snapshot")
         finally:
-            conn.execute("DETACH DATABASE snapshot")
+            if is_compressed and os.path.exists(restore_path):
+                os.remove(restore_path)
 
         store.optimize()
         print(f"snapshot: restored {snapshot_name}")

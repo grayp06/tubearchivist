@@ -3,7 +3,7 @@ functionality:
 - route index calls to the sqlite document store
 - reusable pagination to go through a complete index
 
-ElasticWrap keeps the path based interface of the search server
+IndexClient keeps the path based interface of the search server
 the application was built on, the calls never leave the process.
 """
 
@@ -16,7 +16,7 @@ from common.src.index_store import IndexStore
 DOC_ACTIONS = ("_doc", "_create", "_update")
 
 
-class ElasticWrap:
+class IndexClient:
     """makes all calls to the document store
     returns response dict and status code tuple
     """

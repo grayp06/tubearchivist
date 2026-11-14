@@ -1,7 +1,7 @@
 """send notifications using apprise"""
 
 import apprise
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 from task.src.task_config import TASK_CONFIG
 from task.src.task_manager import TaskManager
 
@@ -77,7 +77,7 @@ class Notifications:
 
     def get_urls(self) -> list[str]:
         """get stored urls for task"""
-        response, code = ElasticWrap(self.GET_PATH).get(print_error=False)
+        response, code = IndexClient(self.GET_PATH).get(print_error=False)
         if not code == 200:
             return []
 
@@ -97,7 +97,7 @@ class Notifications:
             return True
 
         data = {"script": script, "upsert": {self.task_name: [url]}}
-        _, _ = ElasticWrap(self.UPDATE_PATH).post(data)
+        _, _ = IndexClient(self.UPDATE_PATH).post(data)
 
     def remove_url(self, url: str) -> tuple[dict, int]:
         """remove url from task"""
@@ -110,7 +110,7 @@ class Notifications:
             urls.remove(url)
             return True
 
-        response, status_code = ElasticWrap(self.UPDATE_PATH).post(
+        response, status_code = IndexClient(self.UPDATE_PATH).post(
             {"script": script}
         )
         if not self.get_urls():
@@ -124,7 +124,7 @@ class Notifications:
         def script(source: dict) -> bool:
             return source.pop(self.task_name, None) is not None
 
-        response, status_code = ElasticWrap(self.UPDATE_PATH).post(
+        response, status_code = IndexClient(self.UPDATE_PATH).post(
             {"script": script}
         )
 
@@ -134,7 +134,7 @@ class Notifications:
 def get_all_notifications() -> dict[str, list[str]]:
     """get all notifications stored"""
     path = "ta_config/_doc/notify"
-    response, status_code = ElasticWrap(path).get(print_error=False)
+    response, status_code = IndexClient(path).get(print_error=False)
     if not status_code == 200:
         return {}
 

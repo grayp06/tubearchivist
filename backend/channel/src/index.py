@@ -9,8 +9,8 @@ from datetime import datetime
 
 from channel.src.remote_query import get_last_channel_videos
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap, IndexPaginate
 from common.src.helper import rand_sleep
+from common.src.index_client import IndexClient, IndexPaginate
 from common.src.index_generic import YouTubeItem
 from download.src.thumbnails import ThumbManager
 from download.src.yt_dlp_base import YtWrap
@@ -159,7 +159,7 @@ class YoutubeChannel(YouTubeItem):
             "script": self._set_channel,
         }
         update_path = "ta_video/_update_by_query"
-        response, status_code = ElasticWrap(update_path).post(data)
+        response, status_code = IndexClient(update_path).post(data)
         if status_code not in [200, 201]:
             print(f"sync to videos failed with status code {status_code}")
             print(response)
@@ -333,7 +333,7 @@ class ChannelDelete(YouTubeItem):
                 "term": {"channel.channel_id": {"value": self.youtube_id}}
             }
         }
-        _, _ = ElasticWrap("ta_video/_delete_by_query").post(data)
+        _, _ = IndexClient("ta_video/_delete_by_query").post(data)
 
     def _delete_es_comments(self):
         """delete all comments from this channel"""
@@ -342,7 +342,7 @@ class ChannelDelete(YouTubeItem):
                 "term": {"comment_channel_id": {"value": self.youtube_id}}
             }
         }
-        _, _ = ElasticWrap("ta_comment/_delete_by_query").post(data)
+        _, _ = IndexClient("ta_comment/_delete_by_query").post(data)
 
     def _delete_es_subtitles(self):
         """delete all subtitles from this channel"""
@@ -351,7 +351,7 @@ class ChannelDelete(YouTubeItem):
                 "term": {"subtitle_channel_id": {"value": self.youtube_id}}
             }
         }
-        _, _ = ElasticWrap("ta_subtitle/_delete_by_query").post(data)
+        _, _ = IndexClient("ta_subtitle/_delete_by_query").post(data)
 
     def _delete_playlists(self):
         """delete all indexed playlist from es"""

@@ -15,7 +15,7 @@ Functionality shared between apps.
 Defines views on the root `/api/*` path. Has base views to inherit from.
 
 - SQLite document store with search, replaces the search server (`index_store.py`, `index_query.py`, `index_schema.py`)
-- SQLite key value store and queues (`ta_redis.py`)
+- SQLite key value store and queues (`state_store.py`)
 - Searching
 - URL parser
 - Collection of helper functions

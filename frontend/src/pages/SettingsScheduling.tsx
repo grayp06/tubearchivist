@@ -17,6 +17,8 @@ import testAppriseNotificationUrl, {
 } from '../api/actions/testAppriseNotificationUrl';
 import deleteAppriseNotificationUrl from '../api/actions/deleteAppriseNotificationUrl';
 import { ApiError, ApiResponseType } from '../functions/APIClient';
+import loadYtDlpStatus, { YtDlpStatusType } from '../api/loader/loadYtDlpStatus';
+import updateTaskByName from '../api/actions/updateTaskByName';
 
 const getGroupedSchedule = (
   scheduleResponse: ApiResponseType<ScheduleResponseType> | undefined,
@@ -65,6 +67,7 @@ const SettingsScheduling = () => {
   const [checkReindexDays, setCheckReindexDays] = useState<number | undefined>();
   const [thumbnailCheck, setThumbnailCheck] = useState<string | undefined>();
   const [ytdlpUpdate, setYtdlpUpdate] = useState<string | undefined>();
+  const [ytdlpStatus, setYtdlpStatus] = useState<YtDlpStatusType>();
   const [zipBackup, setZipBackup] = useState<string | undefined>();
   const [zipBackupDays, setZipBackupDays] = useState<number | undefined>();
   const [notificationUrl, setNotificationUrl] = useState<string | undefined>();
@@ -87,6 +90,8 @@ const SettingsScheduling = () => {
       if (refresh) {
         const scheduleResponse = await loadSchedule();
         const appriseNotificationResponse = await loadAppriseNotification();
+        const ytdlpStatusResponse = await loadYtDlpStatus();
+        setYtdlpStatus(ytdlpStatusResponse.data);
 
         setScheduleResponse(scheduleResponse);
         setAppriseNotification(appriseNotificationResponse);
@@ -431,6 +436,29 @@ const SettingsScheduling = () => {
         <div className="settings-group">
           <h2>yt-dlp Update</h2>
           <div className="settings-item">
+            <p>
+              Installed yt-dlp version:{' '}
+              <span className="settings-current">{ytdlpStatus?.version || 'unknown'}</span>
+              {ytdlpStatus?.bundled && ytdlpStatus.bundled !== ytdlpStatus.version && (
+                <> (shipped with the image: {ytdlpStatus.bundled})</>
+              )}
+            </p>
+            <p>
+              Automatic updates: <span className="settings-current">{ytdlpStatus?.channel}</span>
+              {ytdlpStatus?.checked && (
+                <>
+                  , last check {new Date(ytdlpStatus.checked * 1000).toLocaleString()}, latest
+                  release {ytdlpStatus.latest}
+                </>
+              )}
+              <Button
+                label="Check now"
+                onClick={async () => {
+                  await updateTaskByName('update_ytdlp');
+                  setRefresh(true);
+                }}
+              />
+            </p>
             <p>
               Current yt-dlp update schedule:{' '}
               <span className="settings-current">

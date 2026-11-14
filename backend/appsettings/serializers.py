@@ -144,3 +144,15 @@ class TokenResponseSerializer(serializers.Serializer):
     """serialize token response"""
 
     token = serializers.CharField(allow_null=True)
+
+
+class YtDlpStatusSerializer(serializers.Serializer):
+    """serialize yt-dlp version and update status"""
+
+    version = serializers.CharField(allow_null=True)
+    bundled = serializers.CharField(allow_null=True)
+    channel = serializers.CharField()
+    enabled = serializers.BooleanField()
+    latest = serializers.CharField(required=False, allow_null=True)
+    updated = serializers.BooleanField(required=False)
+    checked = serializers.IntegerField(required=False)

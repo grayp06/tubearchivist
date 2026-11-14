@@ -6,7 +6,7 @@ Functionality:
 
 from typing import TypedDict
 
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 
 
 class UserConfigType(TypedDict, total=False):
@@ -84,7 +84,7 @@ class UserConfig:
     def set_value(self, key: str, value: str | bool | int):
         """Set or replace a configuration value for the user"""
         data = {"doc": {"config": {key: value}}}
-        response, status = ElasticWrap(self.es_update_url).post(data)
+        response, status = IndexClient(self.es_update_url).post(data)
         if status < 200 or status > 299:
             raise ValueError(f"Failed storing user value {status}: {response}")
 
@@ -95,7 +95,7 @@ class UserConfig:
         if not self._user_id:
             raise ValueError("no user_id passed")
 
-        response, status = ElasticWrap(self.es_url).get(print_error=False)
+        response, status = IndexClient(self.es_url).get(print_error=False)
         if status == 404:
             self.sync_defaults()
             config = self._DEFAULT_USER_SETTINGS
@@ -107,7 +107,7 @@ class UserConfig:
     def update_config(self, to_update: dict) -> None:
         """update config object"""
         data = {"doc": {"config": to_update}}
-        response, status = ElasticWrap(self.es_update_url).post(data)
+        response, status = IndexClient(self.es_update_url).post(data)
         if status < 200 or status > 299:
             raise ValueError(f"Failed storing user value {status}: {response}")
 
@@ -116,7 +116,7 @@ class UserConfig:
 
     def sync_defaults(self):
         """set initial defaults on 404"""
-        response, _ = ElasticWrap(self.es_url).post(
+        response, _ = IndexClient(self.es_url).post(
             {"config": self._DEFAULT_USER_SETTINGS}
         )
         print(f"set default config for user {self._user_id}: {response}")

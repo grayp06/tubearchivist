@@ -6,7 +6,7 @@ import time
 
 import pytest
 from common.src.env_settings import EnvironmentSettings
-from common.src.ta_redis import RedisArchivist, RedisQueue, TaskRedis
+from common.src.state_store import StateQueue, StateStore, TaskStore
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def state_dir(tmp_path, monkeypatch):
 
 def test_messages(state_dir):
     """set, get and delete messages"""
-    handler = RedisArchivist()
+    handler = StateStore()
     handler.set_message("1:progress:abc", {"position": 5})
     handler.set_message("1:progress:def", {"position": 9})
     handler.set_message("plain", "text")
@@ -33,7 +33,7 @@ def test_messages(state_dir):
 
 def test_message_expire(state_dir):
     """expired messages are gone"""
-    handler = RedisArchivist()
+    handler = StateStore()
     handler.set_message("short", {"a": 1}, expire=1)
     assert handler.get_message_dict("short") == {"a": 1}
     time.sleep(1.1)
@@ -43,7 +43,7 @@ def test_message_expire(state_dir):
 
 def test_queue(state_dir):
     """queue keeps order and is unique"""
-    queue = RedisQueue("test:queue")
+    queue = StateQueue("test:queue")
     queue.add_list(["one", "two", "three"])
     queue.add("four")
     queue.add("two")
@@ -55,12 +55,12 @@ def test_queue(state_dir):
     assert queue.max_score() == 5
     queue.clear()
     assert queue.get_next() == (None, None)
-    assert RedisQueue("other").max_score() is None
+    assert StateQueue("other").max_score() is None
 
 
 def test_task_results(state_dir):
     """task results and commands"""
-    handler = TaskRedis()
+    handler = TaskStore()
     message = {"status": "PENDING", "name": "download_pending", "task_id": "1"}
     handler.set_key("1", message)
     assert handler.get_all() == ["1"]

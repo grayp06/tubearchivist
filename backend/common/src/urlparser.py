@@ -7,7 +7,7 @@ Functionality:
 from typing import Literal, NotRequired, TypedDict
 from urllib.parse import parse_qs, urlparse
 
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from download.src.yt_dlp_base import YtWrap
 from video.src.constants import VideoTypeEnum
 
@@ -169,7 +169,7 @@ class Parser:
             return None
 
         cache_key = f"channel:handlesearch:{handle.lower()}"
-        cached = RedisArchivist().get_message_dict(cache_key)
+        cached = StateStore().get_message_dict(cache_key)
         if cached:
             return cached["channel_id"]
 
@@ -191,7 +191,7 @@ class Parser:
             "channel_id": channel_id,
             "handle": handle,
         }
-        RedisArchivist().set_message(cache_key, message, expire=3600 * 24 * 7)
+        StateStore().set_message(cache_key, message, expire=3600 * 24 * 7)
 
     def _detect_vid_type(self, path):
         """try to match enum from path, needs to be serializable"""

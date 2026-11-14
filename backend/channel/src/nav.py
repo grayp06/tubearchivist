@@ -1,6 +1,6 @@
 """build channel nav"""
 
-from common.src.es_connect import ElasticWrap
+from common.src.index_client import IndexClient
 
 
 class ChannelNav:
@@ -28,7 +28,7 @@ class ChannelNav:
             },
             "aggs": {"unique_values": {"terms": {"field": "vid_type"}}},
         }
-        response, _ = ElasticWrap("ta_video/_search").get(data)
+        response, _ = IndexClient("ta_video/_search").get(data)
         buckets = response["aggregations"]["unique_values"]["buckets"]
 
         type_nav = {
@@ -60,7 +60,7 @@ class ChannelNav:
             },
             "_source": False,
         }
-        response, _ = ElasticWrap("ta_download/_search").get(data=data)
+        response, _ = IndexClient("ta_download/_search").get(data=data)
 
         return bool(response["hits"]["hits"])
 
@@ -78,7 +78,7 @@ class ChannelNav:
             },
             "_source": False,
         }
-        response, _ = ElasticWrap("ta_download/_search").get(data=data)
+        response, _ = IndexClient("ta_download/_search").get(data=data)
 
         return bool(response["hits"]["hits"])
 
@@ -92,6 +92,6 @@ class ChannelNav:
             },
             "_source": False,
         }
-        response, _ = ElasticWrap(path).get(data=data)
+        response, _ = IndexClient(path).get(data=data)
 
         return bool(response["hits"]["hits"])

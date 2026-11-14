@@ -4,7 +4,7 @@ functionality:
 - handle task locks and commands
 """
 
-from common.src.ta_redis import TaskRedis
+from common.src.state_store import TaskStore
 from task.src.task_queue import TaskQueue
 
 
@@ -13,7 +13,7 @@ class TaskManager:
 
     def get_all_results(self):
         """return all task results"""
-        handler = TaskRedis()
+        handler = TaskStore()
         all_keys = handler.get_all()
         if not all_keys:
             return False
@@ -30,7 +30,7 @@ class TaskManager:
 
     def get_task(self, task_id):
         """get single task"""
-        return TaskRedis().get_single(task_id)
+        return TaskStore().get_single(task_id)
 
     def is_pending(self, task):
         """check if task_name is pending, pass task object"""
@@ -64,7 +64,7 @@ class TaskManager:
             "name": task.name,
             "task_id": task.request.id,
         }
-        TaskRedis().set_key(task.request.id, message)
+        TaskStore().set_key(task.request.id, message)
 
     def fail_pending(self):
         """
@@ -79,7 +79,7 @@ class TaskManager:
         for result in all_results:
             if result.get("status") == "PENDING":
                 result["status"] = "FAILED"
-                TaskRedis().set_key(result["task_id"], result, expire=True)
+                TaskStore().set_key(result["task_id"], result, expire=True)
 
 
 class TaskCommand:
@@ -105,7 +105,7 @@ class TaskCommand:
         needs to be implemented in task to take effect
         """
         print(f"[task][{task_id}]: received STOP signal.")
-        TaskRedis().set_command(task_id, "STOP")
+        TaskStore().set_command(task_id, "STOP")
 
     def kill(self, task_id):
         """send kill signal to task_id"""
@@ -113,5 +113,5 @@ class TaskCommand:
         # pylint: disable=import-outside-toplevel
         from task.src.dispatcher import wake_dispatcher
 
-        TaskRedis().set_command(task_id, "KILL")
+        TaskStore().set_command(task_id, "KILL")
         wake_dispatcher()

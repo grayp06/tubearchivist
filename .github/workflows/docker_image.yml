@@ -1,0 +1,75 @@
+name: docker_image
+
+# build the image, run the unit tests inside of it
+# and run the end to end tests against the running container,
+# yt-dlp is replaced by a stand-in, nothing is requested from YouTube
+
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --build-arg INSTALL_DEBUG=1 -t tubearchivist:ci .
+
+      - name: Run unit tests inside the image
+        run: |
+          docker run --rm \
+            -e TA_CACHE_DIR=/tmp/cache \
+            -e TA_MEDIA_DIR=/tmp/media \
+            -e TA_AUTO_UPDATE_YTDLP=off \
+            tubearchivist:ci \
+            python -m pytest -q -k "not TomScottGo and not IBRACORP"
+
+      - name: Start container
+        run: |
+          docker run -d --name tubearchivist \
+            -p 8000:8000 \
+            -e TA_HOST=http://localhost:8000 \
+            -e TA_USERNAME=tubearchivist \
+            -e TA_PASSWORD=verysecret \
+            -e TA_AUTO_UPDATE_YTDLP=off \
+            -e PYTHONPATH=/app/e2e/fake \
+            tubearchivist:ci
+
+      - name: Wait for the application
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fs http://localhost:8000/api/health/ > /dev/null; then
+              echo "application is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "application did not start"
+          exit 1
+
+      - name: Run end to end tests
+        run: |
+          docker exec \
+            -e TA_E2E_URL=http://localhost:8000 \
+            -e TA_E2E_USERNAME=tubearchivist \
+            -e TA_E2E_PASSWORD=verysecret \
+            -e TA_E2E_PIPELINE=1 \
+            tubearchivist python /app/e2e/run.py
+
+      - name: Stop container
+        run: |
+          docker stop -t 30 tubearchivist
+          test "$(docker inspect -f '{{.State.ExitCode}}' tubearchivist)" = "0"
+
+      - name: Container logs
+        if: always()
+        run: docker logs tubearchivist

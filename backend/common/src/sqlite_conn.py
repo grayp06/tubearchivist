@@ -104,3 +104,57 @@ def check_sqlite() -> tuple[bool, str]:
         conn.close()
 
     return True, version
+
+
+NETWORK_FS = {
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb",
+    "smb2",
+    "smb3",
+    "smbfs",
+    "9p",
+    "afs",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "ncpfs",
+    "davfs",
+    "fuse.sshfs",
+    "fuse.glusterfs",
+    "fuse.rclone",
+    "fuse.s3fs",
+    "fuse.davfs",
+}
+
+
+def filesystem_type(path: str, mounts_file: str = "/proc/mounts") -> str:
+    """get filesystem type of the mount holding path, empty if unknown"""
+    try:
+        with open(mounts_file, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+
+    real_path = os.path.realpath(path)
+    best_match = ("", "")
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+
+        mount_point = parts[1].replace("\\040", " ")
+        prefix = mount_point.rstrip("/") + "/"
+        if real_path != mount_point and not real_path.startswith(prefix):
+            continue
+
+        if len(mount_point) >= len(best_match[0]):
+            best_match = (mount_point, parts[2])
+
+    return best_match[1]
+
+
+def is_network_fs(fs_type: str) -> bool:
+    """true if sqlite locking is not reliable on filesystem type"""
+    return fs_type.lower() in NETWORK_FS

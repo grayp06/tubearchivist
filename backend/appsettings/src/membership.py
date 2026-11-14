@@ -8,7 +8,7 @@ from os import environ
 import requests
 from appsettings.src.config import AppConfig
 from common.src.helper import get_channels
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 
 
 class Membership:
@@ -31,7 +31,7 @@ class Membership:
 
     def _get_headers(self):
         """get headers with api key"""
-        token = RedisArchivist().get_message_dict(self.REDIS_KEY)
+        token = StateStore().get_message_dict(self.REDIS_KEY)
         if not token:
             raise ValueError("expected MB_API_KEY")
 

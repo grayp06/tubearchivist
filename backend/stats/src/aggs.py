@@ -1,8 +1,8 @@
 """aggregations"""
 
 from common.src.env_settings import EnvironmentSettings
-from common.src.es_connect import ElasticWrap
 from common.src.helper import get_duration_str
+from common.src.index_client import IndexClient
 from django.conf import settings
 
 
@@ -15,7 +15,7 @@ class AggBase:
 
     def get(self):
         """make get call"""
-        response, _ = ElasticWrap(self.path).get(self.data)
+        response, _ = IndexClient(self.path).get(self.data)
         if settings.DEBUG:
             print(
                 f"[agg][{self.name}] took {response.get('took')} ms to process"

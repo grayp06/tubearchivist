@@ -10,10 +10,10 @@ import uuid
 from datetime import datetime, timezone
 
 from common.src.sqlite_conn import write_tx
-from common.src.ta_redis import RedisBase
+from common.src.state_store import StateBase
 
 
-class TaskQueue(RedisBase):
+class TaskQueue(StateBase):
     """interact with queued and running tasks"""
 
     EXPIRE: int = 60 * 60 * 24

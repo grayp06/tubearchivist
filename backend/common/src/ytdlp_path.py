@@ -7,19 +7,39 @@ functionality:
 
 import sys
 from importlib import metadata
-from os import environ, path
+from os import environ, path, pathsep
 
 PACKAGE = "yt-dlp"
 
 
+def _base_dir() -> str:
+    """folder holding everything installed by the updater"""
+    cache_dir = str(environ.get("TA_CACHE_DIR", "/cache"))
+    return path.join(cache_dir, "ytdlp")
+
+
 def get_update_dir() -> str:
     """folder holding the updated yt-dlp packages"""
-    cache_dir = str(environ.get("TA_CACHE_DIR", "/cache"))
-    return path.join(cache_dir, "ytdlp", "packages")
+    return path.join(_base_dir(), "packages")
+
+
+def get_previous_dir() -> str:
+    """folder holding the yt-dlp update in use before the current one"""
+    return path.join(_base_dir(), "packages.previous")
+
+
+def get_bin_dir() -> str:
+    """folder holding updated binaries used by yt-dlp"""
+    return path.join(_base_dir(), "bin")
 
 
 def activate_update() -> bool:
     """prefer the updated yt-dlp over the bundled one, if there is one"""
+    bin_dir = get_bin_dir()
+    search_path = environ.get("PATH", "").split(pathsep)
+    if path.isdir(bin_dir) and bin_dir not in search_path:
+        environ["PATH"] = pathsep.join([bin_dir] + search_path)
+
     update_dir = get_update_dir()
     if not path.isdir(path.join(update_dir, "yt_dlp")):
         return False

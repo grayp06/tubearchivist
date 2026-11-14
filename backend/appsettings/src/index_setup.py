@@ -8,7 +8,7 @@ from common.src.index_schema import all_indexes
 from common.src.index_store import IndexStore
 
 
-class ElasticIndexWrap:
+class IndexSetup:
     """interact with all indexes"""
 
     def __init__(self):

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import ta_host_parser
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.src.ytdlp_path import activate_update
 from corsheaders.defaults import default_headers
 
@@ -236,7 +236,7 @@ CORS_EXPOSE_HEADERS = ["X-Start-Timestamp"]
 TA_UPSTREAM = "https://github.com/tubearchivist/tubearchivist"
 TA_VERSION = "v0.5.10"
 try:
-    TA_START = RedisArchivist().get_message_str("STARTTIMESTAMP")
+    TA_START = StateStore().get_message_str("STARTTIMESTAMP")
 except (ValueError, OSError, sqlite3.Error):
     # fails in unittests bootstrap
     TA_START = None

@@ -12,18 +12,20 @@ from appsettings.serializers import (
     SnapshotListSerializer,
     SnapshotRestoreResponseSerializer,
     TokenResponseSerializer,
+    YtDlpStatusSerializer,
 )
-from appsettings.src.backup import ElasticBackup
+from appsettings.src.backup import IndexBackup
 from appsettings.src.config import AppConfig
-from appsettings.src.snapshot import ElasticSnapshot
+from appsettings.src.snapshot import IndexSnapshot
 from common.serializers import (
     AsyncTaskResponseSerializer,
     ErrorResponseSerializer,
 )
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from common.views_base import AdminOnly, AdminWriteOnly, ApiBaseView
 from django.conf import settings
 from download.src.yt_dlp_base import CookieHandler
+from download.src.ytdlp_update import YtDlpUpdate
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
@@ -49,7 +51,7 @@ class BackupApiListView(ApiBaseView):
     def get(request):
         """get list of available backup files"""
         # pylint: disable=unused-argument
-        backup_files = ElasticBackup().get_all_backup_files()
+        backup_files = IndexBackup().get_all_backup_files()
         serializer = BackupFileSerializer(backup_files, many=True)
         return Response(serializer.data)
 
@@ -93,7 +95,7 @@ class BackupApiView(ApiBaseView):
     def get(request, filename):
         """get single backup"""
         # pylint: disable=unused-argument
-        backup_file = ElasticBackup().build_backup_file_data(filename)
+        backup_file = IndexBackup().build_backup_file_data(filename)
         if not backup_file:
             error = ErrorResponseSerializer({"error": "file not found"})
             return Response(error.data, status=404)
@@ -113,7 +115,7 @@ class BackupApiView(ApiBaseView):
     def post(self, request, filename):
         """start new task to restore backup file"""
         # pylint: disable=unused-argument
-        backup_file = ElasticBackup().build_backup_file_data(filename)
+        backup_file = IndexBackup().build_backup_file_data(filename)
         if not backup_file:
             error = ErrorResponseSerializer({"error": "file not found"})
             return Response(error.data, status=404)
@@ -139,7 +141,7 @@ class BackupApiView(ApiBaseView):
         """delete backup file"""
         # pylint: disable=unused-argument
 
-        backup_file = ElasticBackup().delete_file(filename)
+        backup_file = IndexBackup().delete_file(filename)
         if not backup_file:
             error = ErrorResponseSerializer({"error": "file not found"})
             return Response(error.data, status=404)
@@ -284,7 +286,7 @@ class CookieView(ApiBaseView):
     def _get_cookie_validation():
         """get current cookie validation"""
         config = AppConfig().config
-        validation = RedisArchivist().get_message_dict("cookie:valid")
+        validation = StateStore().get_message_dict("cookie:valid")
         is_enabled = {"cookie_enabled": config["downloads"]["cookie_import"]}
         validation.update(is_enabled)
 
@@ -308,7 +310,7 @@ class SnapshotApiListView(ApiBaseView):
     def get(request):
         """get available snapshots with metadata"""
         # pylint: disable=unused-argument
-        snapshots = ElasticSnapshot().get_snapshot_stats()
+        snapshots = IndexSnapshot().get_snapshot_stats()
         serializer = SnapshotListSerializer(snapshots)
         return Response(serializer.data)
 
@@ -321,7 +323,7 @@ class SnapshotApiListView(ApiBaseView):
     def post(request):
         """take snapshot now"""
         # pylint: disable=unused-argument
-        response = ElasticSnapshot().take_snapshot_now()
+        response = IndexSnapshot().take_snapshot_now()
         serializer = SnapshotCreateResponseSerializer(response)
         return Response(serializer.data)
 
@@ -399,7 +401,7 @@ class SnapshotApiView(ApiBaseView):
     def get(request, snapshot_id):
         """handle get request"""
         # pylint: disable=unused-argument
-        snapshot = ElasticSnapshot().get_single_snapshot(snapshot_id)
+        snapshot = IndexSnapshot().get_single_snapshot(snapshot_id)
 
         if not snapshot:
             error = ErrorResponseSerializer({"error": "snapshot not found"})
@@ -420,7 +422,7 @@ class SnapshotApiView(ApiBaseView):
     def post(request, snapshot_id):
         """restore snapshot"""
         # pylint: disable=unused-argument
-        response = ElasticSnapshot().restore_all(snapshot_id)
+        response = IndexSnapshot().restore_all(snapshot_id)
         if not response:
             error = ErrorResponseSerializer(
                 {"error": "failed to restore snapshot"}
@@ -440,7 +442,7 @@ class SnapshotApiView(ApiBaseView):
     def delete(request, snapshot_id):
         """delete snapshot from index"""
         # pylint: disable=unused-argument
-        response = ElasticSnapshot().delete_single_snapshot(snapshot_id)
+        response = IndexSnapshot().delete_single_snapshot(snapshot_id)
         if not response:
             error = ErrorResponseSerializer(
                 {"error": "failed to delete snapshot"}
@@ -481,3 +483,22 @@ class TokenView(ApiBaseView):
         print("revoke API token")
         request.user.auth_token.delete()
         return Response(status=204)
+
+
+class YtDlpStatusView(ApiBaseView):
+    """resolves to /api/appsettings/ytdlp/
+    GET: current yt-dlp version and result of the last update check
+    a check can be started with the task api, update_ytdlp
+    """
+
+    permission_classes = [AdminOnly]
+
+    @staticmethod
+    @extend_schema(
+        responses={200: OpenApiResponse(YtDlpStatusSerializer())},
+    )
+    def get(request):
+        """get yt-dlp status"""
+        # pylint: disable=unused-argument
+        serializer = YtDlpStatusSerializer(YtDlpUpdate().get_status())
+        return Response(serializer.data)

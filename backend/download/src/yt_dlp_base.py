@@ -12,7 +12,7 @@ from os import path
 from appsettings.src.config import AppConfig
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import deep_merge, rand_sleep
-from common.src.ta_redis import RedisArchivist
+from common.src.state_store import StateStore
 from django.conf import settings
 
 
@@ -174,10 +174,10 @@ class YtWrap:
             cookie_key = "cookie_temp"
             expire = 60 * 30  # 30 min
 
-        old_cookie = RedisArchivist().get_message_str(cookie_key)
+        old_cookie = StateStore().get_message_str(cookie_key)
         if new_cookie and old_cookie != new_cookie:
             print(f"refreshed stored {cookie_key}")
-            RedisArchivist().set_message(
+            StateStore().set_message(
                 cookie_key, new_cookie, expire=expire, save=True
             )
 
@@ -193,14 +193,14 @@ class CookieHandler:
 
     def get(self, message_str: str = "cookie"):
         """get cookie io stream"""
-        cookie = RedisArchivist().get_message_str(message_str)
+        cookie = StateStore().get_message_str(message_str)
         self.cookie_io = StringIO(cookie or self.COOKIE_EMPTY)
         return self.cookie_io
 
     def set_cookie(self, cookie):
         """set cookie str and activate in config"""
         cookie_clean = cookie.strip("\x00")
-        RedisArchivist().set_message("cookie", cookie_clean, save=True)
+        StateStore().set_message("cookie", cookie_clean, save=True)
         AppConfig().update_config({"downloads": {"cookie_import": True}})
         self.config["downloads"]["cookie_import"] = True
         print("[cookie]: activated and stored in Redis")
@@ -208,14 +208,14 @@ class CookieHandler:
     @staticmethod
     def revoke():
         """revoke cookie"""
-        RedisArchivist().del_message("cookie")
-        RedisArchivist().del_message("cookie:valid")
+        StateStore().del_message("cookie")
+        StateStore().del_message("cookie:valid")
         AppConfig().update_config({"downloads": {"cookie_import": False}})
         print("[cookie]: revoked")
 
     def validate(self) -> bool:
         """validate cookie using the liked videos playlist"""
-        validation = RedisArchivist().get_message_dict("cookie:valid")
+        validation = StateStore().get_message_dict("cookie:valid")
         if validation:
             print("[cookie]: used cached cookie validation")
             return True
@@ -233,7 +233,7 @@ class CookieHandler:
         modified = validator.obs["cookiefile"].getvalue().strip("\x00")
         if modified:
             cookie_clean = modified.strip("\x00")
-            RedisArchivist().set_message("cookie", cookie_clean)
+            StateStore().set_message("cookie", cookie_clean)
 
         if not response:
             mess_dict = {
@@ -242,9 +242,7 @@ class CookieHandler:
                 "title": "Cookie validation failed, exiting...",
                 "message": error,
             }
-            RedisArchivist().set_message(
-                "message:download", mess_dict, expire=4
-            )
+            StateStore().set_message("message:download", mess_dict, expire=4)
             print("[cookie]: validation failed, exiting...")
 
         print(f"[cookie]: validation success: {bool(response)}")
@@ -259,4 +257,4 @@ class CookieHandler:
             "validated": int(now.timestamp()),
             "validated_str": now.strftime("%Y-%m-%d %H:%M"),
         }
-        RedisArchivist().set_message("cookie:valid", message, expire=3600)
+        StateStore().set_message("cookie:valid", message, expire=3600)

@@ -5,8 +5,8 @@ functionality:
 
 from datetime import datetime
 
-from common.src.es_connect import ElasticWrap
-from common.src.ta_redis import RedisArchivist
+from common.src.index_client import IndexClient
+from common.src.state_store import StateStore
 from common.src.urlparser import Parser
 
 
@@ -33,7 +33,7 @@ class WatchState:
             self.reset_playlist_progress()
 
         data = self._build_update_data(url_type)
-        _, _ = ElasticWrap("ta_video/_update_by_query").post(data)
+        _, _ = IndexClient("ta_video/_update_by_query").post(data)
 
     def _dedect_type(self):
         """find youtube id type"""
@@ -47,9 +47,9 @@ class WatchState:
         data = {"doc": {"player": {"watched": self.is_watched}}}
         if self.is_watched:
             data["doc"]["player"]["watched_date"] = self.stamp
-        response, status_code = ElasticWrap(path).post(data=data)
+        response, status_code = IndexClient(path).post(data=data)
         key = f"{self.user_id}:progress:{self.youtube_id}"
-        RedisArchivist().del_message(key)
+        StateStore().del_message(key)
         if status_code != 200:
             print(response)
             raise ValueError("failed to mark video as watched")
@@ -72,7 +72,7 @@ class WatchState:
 
     def _reset_list(self, video_ids: list[str]):
         """reset list of video ids"""
-        redis_con = RedisArchivist()
+        redis_con = StateStore()
         all_ids = redis_con.list_keys(f"{self.user_id}:progress")
         for progress_id in all_ids:
             video_id = progress_id.split(":")[-1]
